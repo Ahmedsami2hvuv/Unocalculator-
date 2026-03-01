@@ -53,6 +53,9 @@ async def channel_subscribe_message_middleware(handler, event: types.Message, da
 async def channel_subscribe_callback_middleware(handler, event: types.CallbackQuery, data: dict):
     if not CHANNEL_ID:
         return await handler(event, data)
+    # لا نعترض زر «تحقق» — نترك المعالج يتحقق ويفتح القائمة إن كان مشتركاً
+    if getattr(event, "data", None) == "check_channel_sub":
+        return await handler(event, data)
     user_id = event.from_user.id if event.from_user else None
     if not user_id:
         return await handler(event, data)
@@ -2690,14 +2693,19 @@ async def on_check_channel_sub(c: types.CallbackQuery, state: FSMContext):
     if not CHANNEL_ID:
         await c.answer()
         return
-    if await is_channel_member(c.bot, c.from_user.id):
+    # التحقق من الاشتراك (لا يعترضه الـ middleware ليكون التحقق هنا فقط)
+    try:
+        is_member = await is_channel_member(c.bot, c.from_user.id)
+    except Exception:
+        is_member = False
+    if is_member:
         await state.clear()
         user = db_query("SELECT player_name FROM users WHERE user_id = %s", (c.from_user.id,))
         name = user[0]['player_name'] if user else c.from_user.full_name
         await show_main_menu(c.message, name, user_id=c.from_user.id, state=state)
-        await c.answer()
+        await c.answer("✅ تم التحقق، مرحباً!")
     else:
-        await c.answer("⛔ ما زلت غير مشترك. اشترك ثم اضغط «تحقق».", show_alert=True)
+        await c.answer("⛔ ما زلت غير مشترك. اشترك في القناة ثم اضغط «تحقق» مرة أخرى.", show_alert=True)
 
 @router.callback_query(F.data == "home")
 async def home_callback(c: types.CallbackQuery, state: FSMContext):
