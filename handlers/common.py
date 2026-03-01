@@ -1832,28 +1832,58 @@ async def set_new_score_limit(c: types.CallbackQuery):
     await room_settings(c)
 
 @router.callback_query(F.data == "account_logout")
-async def account_logout(c: types.CallbackQuery, state: FSMContext):
-    """تسجيل الخروج: عرض شاشة الدخول/التسجيل"""
+async def account_logout_ask(c: types.CallbackQuery, state: FSMContext):
+    """عرض تأكيد تسجيل الخروج"""
     uid = c.from_user.id
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✅ نعم، سجّل الخروج", callback_data="account_logout_confirm")],
+            [InlineKeyboardButton(text="❌ لا، إلغاء", callback_data="my_account")],
+        ]
+    )
+    text = (
+        "🚪 **تسجيل الخروج**\n\n"
+        "هل أنت متأكد؟ بعد تسجيل الخروج لن تستطيع الرجوع لحسابك إلا بـ:\n"
+        "• كتابة **اليوزر نيم** وكلمة السر (دخول)، أو\n"
+        "• إنشاء حساب جديد.\n\n"
+        "اختر:"
+    )
+    try:
+        await c.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+    except Exception:
+        await c.message.answer(text, reply_markup=kb, parse_mode="Markdown")
+    await c.answer()
+
+
+@router.callback_query(F.data == "account_logout_confirm")
+async def account_logout_confirm(c: types.CallbackQuery, state: FSMContext):
+    """تنفيذ تسجيل الخروج بعد الموافقة"""
+    uid = c.from_user.id
+    await state.clear()
+    # التأكد من وجود عمود logged_out (إن لم يكن في schema)
+    try:
+        db_query("ALTER TABLE users ADD COLUMN IF NOT EXISTS logged_out BOOLEAN DEFAULT FALSE", commit=True)
+    except Exception:
+        try:
+            db_query("ALTER TABLE users ADD COLUMN logged_out BOOLEAN DEFAULT FALSE", commit=True)
+        except Exception:
+            pass
     try:
         db_query("UPDATE users SET logged_out = TRUE WHERE user_id = %s", (uid,), commit=True)
     except Exception:
         pass
-    await state.clear()
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text=t(uid, "btn_register"), callback_data="auth_register")],
             [InlineKeyboardButton(text=t(uid, "btn_login"), callback_data="auth_login")],
         ]
     )
+    text = "👋 تم تسجيل الخروج بنجاح.\n\n" + t(uid, "welcome_new")
     try:
-        await c.message.edit_text(
-            "👋 تم تسجيل الخروج بنجاح.\n\n" + t(uid, "welcome_new"),
-            reply_markup=kb,
-        )
+        await c.message.edit_text(text, reply_markup=kb)
     except Exception:
-        await c.message.answer("👋 تم تسجيل الخروج بنجاح.\n\n" + t(uid, "welcome_new"), reply_markup=kb)
-    await c.answer("تم تسجيل الخروج.")
+        await c.message.answer(text, reply_markup=kb)
+    await c.answer("تم تسجيل الخروج. استخدم دخول أو تسجيل للعودة.")
 
 @router.callback_query(F.data == "match_history")
 async def show_match_history(c: types.CallbackQuery):
