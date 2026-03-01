@@ -367,9 +367,14 @@ async def cmd_start_with_deeplink(message: types.Message, state: FSMContext):
         await message.delete()
     except Exception:
         pass
-    user = db_query("SELECT player_name FROM users WHERE user_id = %s", (message.from_user.id,))
+    uid = message.from_user.id
+    try:
+        db_query("UPDATE users SET username = %s WHERE user_id = %s", (message.from_user.username or "", uid), commit=True)
+    except Exception:
+        pass
+    user = db_query("SELECT player_name FROM users WHERE user_id = %s", (uid,))
     name = user[0]["player_name"] if user else message.from_user.full_name
-    await show_main_menu(message, name, user_id=message.from_user.id, state=state)
+    await show_main_menu(message, name, user_id=uid, state=state)
 
 
 @router.message(F.text == "ستارت")
@@ -378,9 +383,14 @@ async def quick_start_button(message: types.Message, state: FSMContext):
         await message.delete()
     except Exception:
         pass
-    user = db_query("SELECT player_name FROM users WHERE user_id = %s", (message.from_user.id,))
+    uid = message.from_user.id
+    try:
+        db_query("UPDATE users SET username = %s WHERE user_id = %s", (message.from_user.username or "", uid), commit=True)
+    except Exception:
+        pass
+    user = db_query("SELECT player_name FROM users WHERE user_id = %s", (uid,))
     name = user[0]["player_name"] if user else message.from_user.full_name
-    await show_main_menu(message, name, user_id=message.from_user.id, state=state)
+    await show_main_menu(message, name, user_id=uid, state=state)
 
 @router.message(RoomStates.upgrade_username)
 async def process_upgrade_username(message: types.Message, state: FSMContext):
