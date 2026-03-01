@@ -5,6 +5,9 @@
 --    وليس داخل مجلد handlers. هذا ملف SQL يُنفَّذ مرة واحدة على قاعدة البيانات
 --    ولا يُستورد من بايثون.
 
+-- يوزر تليجرام (@) للاعب (يُحدَّث من البوت عند التفاعل)
+ALTER TABLE users ADD COLUMN IF NOT EXISTS username VARCHAR(100) DEFAULT NULL;
+
 -- تعليم تفاعلي: عرض الدليل لأول مرة فقط
 ALTER TABLE users ADD COLUMN IF NOT EXISTS seen_tutorial BOOLEAN DEFAULT FALSE;
 
@@ -33,3 +36,6 @@ ALTER TABLE rooms ADD COLUMN IF NOT EXISTS is_public BOOLEAN DEFAULT FALSE;
 ALTER TABLE rooms ADD COLUMN IF NOT EXISTS is_tournament BOOLEAN DEFAULT FALSE;
 ALTER TABLE rooms ADD COLUMN IF NOT EXISTS tournament_rounds INT DEFAULT 3;
 ALTER TABLE rooms ADD COLUMN IF NOT EXISTS tournament_current_round INT DEFAULT 1;
+
+-- وقت إنشاء الغرفة (لإدارة البوت: إغلاق الغرف المتروكة أكثر من 24 ساعة)
+ALTER TABLE rooms ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
