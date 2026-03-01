@@ -256,16 +256,25 @@ def _esc(s):
 def _user_detail_text(u: dict) -> str:
     uid = u.get("user_id")
     name = _esc(u.get("player_name") or "—")
+    # يوزر تليجرام = حساب الشخص في التليجرام (@)
+    tg_username = (u.get("username") or "").strip() or "—"
+    if tg_username != "—":
+        tg_username = "@" + _esc(tg_username)
+    else:
+        tg_username = "—"
     uname = _esc(u.get("username_key") or "—")
     pwd = _esc(u.get("password_key") or u.get("password") or "—")
     pts = u.get("online_points", 0)
     reg = u.get("is_registered")
     lang = _esc(u.get("language") or "ar")
+    # الايدي قابل للضغط لفتح محادثة اللاعب في تليجرام
+    uid_link = f'<a href="tg://user?id={uid}">{uid} — اضغط للتواصل مع اللاعب</a>'
     return (
         "👤 <b>معلومات اللاعب</b>\n\n"
-        f"🆔 user_id: <code>{_esc(uid)}</code>\n"
+        f"🆔 الايدي (اضغط لفتح المحادثة): {uid_link}\n"
+        f"📱 يوزر تليجرام: {tg_username}\n"
         f"📛 الاسم: {name}\n"
-        f"👤 اليوزر نيم (البوت): @{uname}\n"
+        f"👤 يوزر البوت: @{uname}\n"
         f"🔑 كلمة السر: {pwd}\n"
         f"⭐ النقاط: {pts}\n"
         f"✅ مسجل: {reg}\n"
