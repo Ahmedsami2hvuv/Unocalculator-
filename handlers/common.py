@@ -700,7 +700,7 @@ async def register_password(message: types.Message, state: FSMContext):
     lang = get_lang(uid)
     user = db_query("SELECT * FROM users WHERE user_id = %s", (uid,))
     if user:
-        db_query("UPDATE users SET player_name = %s, password_key = %s, is_registered = TRUE, language = %s WHERE user_id = %s", (name, password, lang, uid), commit=True)
+        db_query("UPDATE users SET player_name = %s, password_key = %s, is_registered = TRUE, logged_out = FALSE, language = %s WHERE user_id = %s", (name, password, lang, uid), commit=True)
     else:
         db_query("INSERT INTO users (user_id, username, player_name, password_key, is_registered, language) VALUES (%s, %s, %s, %s, TRUE, %s)", (uid, message.from_user.username or '', name, password, lang), commit=True)
     await state.clear()
@@ -746,7 +746,7 @@ async def login_password(message: types.Message, state: FSMContext):
         await message.answer(t(uid, "login_fail"))
         return
     old_id = user[0]['user_id']
-    db_query("UPDATE users SET user_id = %s, username = %s, is_registered = TRUE WHERE player_name = %s", (uid, message.from_user.username or '', name), commit=True)
+    db_query("UPDATE users SET user_id = %s, username = %s, is_registered = TRUE, logged_out = FALSE WHERE player_name = %s", (uid, message.from_user.username or '', name), commit=True)
     data_state = await state.get_data()
     pending_join = data_state.get('pending_join')
     await state.clear()
@@ -1328,6 +1328,20 @@ async def show_main_menu(message, name, user_id, cleanup=False, state=None, from
     if not user_rows:
         return
     uid = user_id
+    # 2.5 إذا كان مسجّل الخروج، نعرض له شاشة الدخول/التسجيل
+    if not from_admin and user_rows[0].get("logged_out") in (True, 1, "t", "true"):
+        target_msg = message.message if isinstance(message, types.CallbackQuery) else message
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text=t(uid, "btn_register"), callback_data="auth_register")],
+                [InlineKeyboardButton(text=t(uid, "btn_login"), callback_data="auth_login")],
+            ]
+        )
+        try:
+            await target_msg.answer(t(uid, "welcome_new"), reply_markup=kb)
+        except Exception:
+            pass
+        return
     # 3. شرط اليوزر نيم (تخطى إذا رجوع من لوحة الإدارة)
     if not from_admin and not user_rows[0].get('username_key'):
         target_msg = message.message if isinstance(message, types.CallbackQuery) else message
@@ -1810,9 +1824,34 @@ async def process_my_account_callback(c: types.CallbackQuery):
     kb = [
         [InlineKeyboardButton(text="✏️ تعديل حسابي", callback_data="edit_account"), InlineKeyboardButton(text="⚙️ الإعدادات", callback_data="my_settings")],
         [InlineKeyboardButton(text="📜 سجل المباريات", callback_data="match_history")],
+        [InlineKeyboardButton(text="🚪 تسجيل خروج", callback_data="account_logout")],
         [InlineKeyboardButton(text=t(uid, "btn_back"), callback_data="home")]
     ]
     await c.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+
+@router.callback_query(F.data == "account_logout")
+async def account_logout(c: types.CallbackQuery, state: FSMContext):
+    """تسجيل الخروج: عرض شاشة الدخول/التسجيل"""
+    uid = c.from_user.id
+    try:
+        db_query("UPDATE users SET logged_out = TRUE WHERE user_id = %s", (uid,), commit=True)
+    except Exception:
+        pass
+    await state.clear()
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=t(uid, "btn_register"), callback_data="auth_register")],
+            [InlineKeyboardButton(text=t(uid, "btn_login"), callback_data="auth_login")],
+        ]
+    )
+    try:
+        await c.message.edit_text(
+            "👋 تم تسجيل الخروج بنجاح.\n\n" + t(uid, "welcome_new"),
+            reply_markup=kb,
+        )
+    except Exception:
+        await c.message.answer("👋 تم تسجيل الخروج بنجاح.\n\n" + t(uid, "welcome_new"), reply_markup=kb)
+    await c.answer("تم تسجيل الخروج.")
 
 @router.callback_query(F.data == "match_history")
 async def show_match_history(c: types.CallbackQuery):
