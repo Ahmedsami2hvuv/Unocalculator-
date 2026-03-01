@@ -375,7 +375,19 @@ async def cmd_start_with_deeplink(message: types.Message, state: FSMContext):
         db_query("UPDATE users SET username = %s WHERE user_id = %s", (message.from_user.username or "", uid), commit=True)
     except Exception:
         pass
-    user = db_query("SELECT player_name FROM users WHERE user_id = %s", (uid,))
+    user = db_query("SELECT * FROM users WHERE user_id = %s", (uid,))
+    # إذا كان مسجّل الخروج، نعرض تسجيل/دخول ولا نفتح القائمة الرئيسية
+    if user and user[0].get("logged_out") in (True, 1, "t", "true"):
+        lang = get_lang(uid)
+        set_lang(uid, lang)
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text=t(uid, "btn_register"), callback_data="auth_register")],
+                [InlineKeyboardButton(text=t(uid, "btn_login"), callback_data="auth_login")],
+            ]
+        )
+        await message.answer(t(uid, "welcome_new"), reply_markup=kb)
+        return
     name = user[0]["player_name"] if user else message.from_user.full_name
     await show_main_menu(message, name, user_id=uid, state=state)
 
@@ -391,7 +403,16 @@ async def quick_start_button(message: types.Message, state: FSMContext):
         db_query("UPDATE users SET username = %s WHERE user_id = %s", (message.from_user.username or "", uid), commit=True)
     except Exception:
         pass
-    user = db_query("SELECT player_name FROM users WHERE user_id = %s", (uid,))
+    user = db_query("SELECT * FROM users WHERE user_id = %s", (uid,))
+    if user and user[0].get("logged_out") in (True, 1, "t", "true"):
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text=t(uid, "btn_register"), callback_data="auth_register")],
+                [InlineKeyboardButton(text=t(uid, "btn_login"), callback_data="auth_login")],
+            ]
+        )
+        await message.answer(t(uid, "welcome_new"), reply_markup=kb)
+        return
     name = user[0]["player_name"] if user else message.from_user.full_name
     await show_main_menu(message, name, user_id=uid, state=state)
 
@@ -718,8 +739,11 @@ async def auth_login(c: types.CallbackQuery, state: FSMContext):
 @router.message(RoomStates.login_name)
 async def login_name(message: types.Message, state: FSMContext):
     uid = message.from_user.id
-    name = message.text.strip()
-    user = db_query("SELECT * FROM users WHERE player_name = %s", (name,))
+    raw = (message.text or "").strip().lower().replace("@", "")
+    # الدخول باليوزر نيم (مثل a1a) أو باسم اللاعب
+    user = db_query("SELECT * FROM users WHERE username_key = %s", (raw,))
+    if not user:
+        user = db_query("SELECT * FROM users WHERE player_name = %s", (message.text.strip(),))
     if not user:
         await message.answer(t(uid, "login_fail"))
         return
@@ -727,7 +751,9 @@ async def login_name(message: types.Message, state: FSMContext):
         await message.answer(t(uid, "login_fail"))
         await state.clear()
         return
-    await state.update_data(login_target_name=name)
+    # حفظ الاسم المستخدم للبحث (للمرحلة التالية)
+    login_name_value = user[0].get("player_name") or user[0].get("username_key") or raw
+    await state.update_data(login_target_name=login_name_value)
     await message.answer(t(uid, "login_ask_password"))
     await state.set_state(RoomStates.login_password)
 
@@ -736,7 +762,10 @@ async def login_password(message: types.Message, state: FSMContext):
     uid = message.from_user.id
     data = await state.get_data()
     name = data.get('login_target_name')
+    # البحث بالاسم المحفوظ (قد يكون player_name أو username_key)
     user = db_query("SELECT * FROM users WHERE player_name = %s", (name,))
+    if not user:
+        user = db_query("SELECT * FROM users WHERE username_key = %s", (name.lower(),))
     if not user:
         await message.answer(t(uid, "login_fail"))
         await state.clear()
