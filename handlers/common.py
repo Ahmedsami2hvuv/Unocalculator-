@@ -898,23 +898,25 @@ def _get_follow_counts(user_id):
 @router.callback_query(F.data == "my_account")
 async def show_profile(c: types.CallbackQuery):
     user_data = db_query("SELECT * FROM users WHERE user_id = %s", (c.from_user.id,))
-    if not user_data: return await c.answer("⚠️ حسابك غير مسجل.")
-    
+    if not user_data:
+        return await c.answer("⚠️ حسابك غير مسجل.")
     user = user_data[0]
     uid = c.from_user.id
     followers_count, following_count = _get_follow_counts(uid)
     txt = (
-    f"👤 **معلومات حسابك**\n\n"
-    f"📛 اسم اللاعب: {user['player_name']}\n"
-    f"🔑 الرمز السري: `{user.get('password_key') or user.get('password') or 'لا يوجد'}`\n"
-    f"🆔 اليوزر نيم: @{user.get('username_key') or '---'}\n"
-    f"⭐ عدد النقاط: {user.get('online_points', 0)}\n"
-    f"📈 عدد المتابعين (الذين يتابعونك): {followers_count}\n"
-    f"📉 عدد من تتابعهم: {following_count}"
+        f"👤 **معلومات حسابك**\n\n"
+        f"📛 اسم اللاعب: {user['player_name']}\n"
+        f"🔑 الرمز السري: `{user.get('password_key') or user.get('password') or 'لا يوجد'}`\n"
+        f"🆔 اليوزر نيم: @{user.get('username_key') or '---'}\n"
+        f"⭐ عدد النقاط: {user.get('online_points', 0)}\n"
+        f"📈 عدد المتابعين (الذين يتابعونك): {followers_count}\n"
+        f"📉 عدد من تتابعهم: {following_count}"
     )
     kb = [
         [InlineKeyboardButton(text="✏️ تعديل بيانات الحساب", callback_data="edit_account"), InlineKeyboardButton(text="⚙️ الإعدادات", callback_data="my_settings")],
-        [InlineKeyboardButton(text="🔙 رجوع", callback_data="home")]
+        [InlineKeyboardButton(text="📜 سجل المباريات", callback_data="match_history")],
+        [InlineKeyboardButton(text="🚪 تسجيل خروج", callback_data="account_logout")],
+        [InlineKeyboardButton(text=t(uid, "btn_back"), callback_data="home")]
     ]
     await c.message.edit_text(txt, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
 
@@ -1799,35 +1801,6 @@ async def set_new_score_limit(c: types.CallbackQuery):
             pass
     c.data = f"rsettings_{code}"
     await room_settings(c)
-
-@router.callback_query(F.data == "my_account")
-async def process_my_account_callback(c: types.CallbackQuery):
-    uid = c.from_user.id
-    user_data = db_query("SELECT * FROM users WHERE user_id = %s", (uid,))
-    if not user_data:
-        return await c.answer("⚠️ حسابك غير موجود.")
-    user = user_data[0]
-    name = user.get('player_name', 'لاعب')
-    username = user.get('username_key') or "---"
-    points = user.get('online_points', 0)
-    password = user.get('password_key') or user.get('password', '----')
-    followers_count, following_count = _get_follow_counts(uid)
-    text = (
-        f"👤 **حسابي**\n\n"
-        f"📛 اسم اللاعب: {name}\n"
-        f"🔑 الرمز السري: `{password}`\n"
-        f"🆔 اليوزر نيم: @{username}\n"
-        f"⭐ عدد النقاط: {points}\n"
-        f"📈 عدد المتابعين (الذين يتابعونك): {followers_count}\n"
-        f"📉 عدد من تتابعهم: {following_count}"
-    )
-    kb = [
-        [InlineKeyboardButton(text="✏️ تعديل حسابي", callback_data="edit_account"), InlineKeyboardButton(text="⚙️ الإعدادات", callback_data="my_settings")],
-        [InlineKeyboardButton(text="📜 سجل المباريات", callback_data="match_history")],
-        [InlineKeyboardButton(text="🚪 تسجيل خروج", callback_data="account_logout")],
-        [InlineKeyboardButton(text=t(uid, "btn_back"), callback_data="home")]
-    ]
-    await c.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
 
 @router.callback_query(F.data == "account_logout")
 async def account_logout(c: types.CallbackQuery, state: FSMContext):
