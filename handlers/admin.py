@@ -284,13 +284,15 @@ def _user_detail_text(u: dict) -> str:
 
 async def _send_admin_user_detail(bot, chat_id: int, user: dict, admin_uid: int):
     uid = user.get("user_id")
-    kb = InlineKeyboardMarkup(inline_keyboard=[
+    kb = [
         [InlineKeyboardButton(text="✏️ تعديل الاسم", callback_data=f"admin_ef_name_{uid}")],
         [InlineKeyboardButton(text="✏️ تعديل اليوزر نيم", callback_data=f"admin_ef_username_{uid}")],
         [InlineKeyboardButton(text="✏️ تعديل كلمة السر", callback_data=f"admin_ef_password_{uid}")],
         [InlineKeyboardButton(text="✏️ تعديل النقاط", callback_data=f"admin_ef_points_{uid}")],
+        [InlineKeyboardButton(text="🔓 إصلاح الدخول (إلغاء تسجيل الخروج)", callback_data=f"admin_fix_login_{uid}")],
         [InlineKeyboardButton(text="🔙 رجوع للقائمة", callback_data="admin_players")],
-    ])
+    ]
+    kb = InlineKeyboardMarkup(inline_keyboard=kb)
     await bot.send_message(chat_id, _user_detail_text(user), reply_markup=kb, parse_mode="HTML")
 
 
@@ -304,16 +306,44 @@ async def admin_view_user(c: types.CallbackQuery, state: FSMContext):
         user = db_query("SELECT * FROM users WHERE user_id = %s", (uid,))
         if not user:
             return await c.answer("❌ اللاعب غير موجود.", show_alert=True)
+        kb = [
+            [InlineKeyboardButton(text="✏️ تعديل الاسم", callback_data=f"admin_ef_name_{uid}")],
+            [InlineKeyboardButton(text="✏️ تعديل اليوزر نيم", callback_data=f"admin_ef_username_{uid}")],
+            [InlineKeyboardButton(text="✏️ تعديل كلمة السر", callback_data=f"admin_ef_password_{uid}")],
+            [InlineKeyboardButton(text="✏️ تعديل النقاط", callback_data=f"admin_ef_points_{uid}")],
+            [InlineKeyboardButton(text="🔓 إصلاح الدخول (إلغاء تسجيل الخروج)", callback_data=f"admin_fix_login_{uid}")],
+            [InlineKeyboardButton(text="🔙 رجوع", callback_data="admin_players")],
+        ]
+        await c.message.edit_text(_user_detail_text(user[0]), reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="HTML")
+    except Exception as e:
+        await c.answer(f"خطأ: {e}", show_alert=True)
+    await c.answer()
+
+
+@router.callback_query(F.data.startswith("admin_fix_login_"))
+async def admin_fix_login(c: types.CallbackQuery):
+    """إلغاء تسجيل الخروج للاعب حتى يستطيع الدخول للبوت بشكل طبيعي"""
+    if not _admin_only(c):
+        return await c.answer("⛔ غير مسموح.", show_alert=True)
+    try:
+        uid = int(c.data.replace("admin_fix_login_", ""))
+    except ValueError:
+        return await c.answer("خطأ في الايدي.", show_alert=True)
+    try:
+        db_query("UPDATE users SET logged_out = FALSE WHERE user_id = %s", (uid,), commit=True)
+    except Exception:
+        pass
+    await c.answer("✅ تم إصلاح الدخول: اللاعب يمكنه فتح البوت الآن.", show_alert=True)
+    user = db_query("SELECT * FROM users WHERE user_id = %s", (uid,))
+    if user:
         await c.message.edit_text(_user_detail_text(user[0]), reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="✏️ تعديل الاسم", callback_data=f"admin_ef_name_{uid}")],
             [InlineKeyboardButton(text="✏️ تعديل اليوزر نيم", callback_data=f"admin_ef_username_{uid}")],
             [InlineKeyboardButton(text="✏️ تعديل كلمة السر", callback_data=f"admin_ef_password_{uid}")],
             [InlineKeyboardButton(text="✏️ تعديل النقاط", callback_data=f"admin_ef_points_{uid}")],
+            [InlineKeyboardButton(text="🔓 إصلاح الدخول (إلغاء تسجيل الخروج)", callback_data=f"admin_fix_login_{uid}")],
             [InlineKeyboardButton(text="🔙 رجوع", callback_data="admin_players")],
         ]), parse_mode="HTML")
-    except Exception as e:
-        await c.answer(f"خطأ: {e}", show_alert=True)
-    await c.answer()
 
 
 @router.callback_query(F.data.startswith("admin_ef_name_"))
