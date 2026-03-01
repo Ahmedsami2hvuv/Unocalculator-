@@ -1306,7 +1306,7 @@ async def process_user_search_by_id(c: types.CallbackQuery, target_id: int):
     await c.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
     
 
-async def show_main_menu(message, name, user_id, cleanup=False, state=None):
+async def show_main_menu(message, name, user_id, cleanup=False, state=None, from_admin=False):
     # 1. تنظيف الحالة
     if state:
         await state.clear()
@@ -1315,18 +1315,24 @@ async def show_main_menu(message, name, user_id, cleanup=False, state=None):
     if not user_rows:
         return
     uid = user_id
-    # 3. شرط اليوزر نيم
-    if not user_rows[0].get('username_key'):
+    # 3. شرط اليوزر نيم (تخطى إذا رجوع من لوحة الإدارة)
+    if not from_admin and not user_rows[0].get('username_key'):
         target_msg = message.message if isinstance(message, types.CallbackQuery) else message
         await target_msg.answer("⚠️ يرجى إدخال اسم مستخدم (يوزر نيم) خاص بك (حروف إنجليزية وأرقام فقط):")
         if state:
             await state.set_state(RoomStates.upgrade_username)
         return
-    # 3.5 تعليم تفاعلي (أول استخدام)
+    # 3.5 تعليم تفاعلي (أول استخدام فقط؛ من لديه يوزر أو مسجّل لا يُعرض له مرة ثانية)
     try:
-        seen = (user_id in _tutorial_done_cache) or (user_rows[0].get('seen_tutorial') in (True, 1, 't', 'true'))
+        seen = (
+            from_admin
+            or (user_id in _tutorial_done_cache)
+            or (user_rows[0].get('seen_tutorial') in (True, 1, 't', 'true'))
+            or bool(user_rows[0].get('username_key'))
+            or bool(user_rows[0].get('is_registered'))
+        )
     except Exception:
-        seen = user_id in _tutorial_done_cache
+        seen = from_admin or (user_id in _tutorial_done_cache)
     if not seen:
         target_msg = message.message if isinstance(message, types.CallbackQuery) else message
         txt = t(uid, "tutorial_title") + "\n\n" + t(uid, "tutorial_body")
@@ -1371,7 +1377,16 @@ async def show_main_menu(message, name, user_id, cleanup=False, state=None):
         except Exception:
             pass
     # 6. إرسال الرسالة النهائية
-    if isinstance(message, types.CallbackQuery):
+    if from_admin:
+        # العودة من لوحة الإدارة: تعديل الرسالة الحالية دون رسالة إضافية
+        target = message.message if isinstance(message, types.CallbackQuery) else message
+        try:
+            await target.edit_text(msg_text, reply_markup=markup)
+        except Exception:
+            await target.answer(msg_text, reply_markup=markup)
+        if isinstance(message, types.CallbackQuery):
+            await message.answer(t(uid, "menu_updated"))
+    elif isinstance(message, types.CallbackQuery):
         await _cleanup_last_messages(message.message, limit=15)
         try:
             await message.message.edit_text(msg_text, reply_markup=markup)
