@@ -2698,14 +2698,45 @@ async def on_check_channel_sub(c: types.CallbackQuery, state: FSMContext):
         is_member = await is_channel_member(c.bot, c.from_user.id)
     except Exception:
         is_member = False
-    if is_member:
-        await state.clear()
-        user = db_query("SELECT player_name FROM users WHERE user_id = %s", (c.from_user.id,))
-        name = user[0]['player_name'] if user else c.from_user.full_name
-        await show_main_menu(c.message, name, user_id=c.from_user.id, state=state)
-        await c.answer("✅ تم التحقق، مرحباً!")
-    else:
+    if not is_member:
         await c.answer("⛔ ما زلت غير مشترك. اشترك في القناة ثم اضغط «تحقق» مرة أخرى.", show_alert=True)
+        return
+    await state.clear()
+    uid = c.from_user.id
+    # التأكد من وجود المستخدم في القاعدة (قد يكون جديداً ولم يمرّ بـ /start)
+    user = db_query("SELECT * FROM users WHERE user_id = %s", (uid,))
+    if not user:
+        try:
+            db_query(
+                "INSERT INTO users (user_id, username, is_registered) VALUES (%s, %s, FALSE)",
+                (uid, c.from_user.username or ""),
+                commit=True,
+            )
+        except Exception:
+            pass
+        user = db_query("SELECT * FROM users WHERE user_id = %s", (uid,))
+    # إذا لم يكن مسجّلاً أو ليس لديه حساب، نعرض له تسجيل الدخول أو إنشاء حساب
+    if not user or not user[0].get("is_registered") or not user[0].get("username_key"):
+        lang = get_lang(uid)
+        set_lang(uid, lang)
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text=t(uid, "btn_register"), callback_data="auth_register")],
+                [InlineKeyboardButton(text=t(uid, "btn_login"), callback_data="auth_login")],
+            ]
+        )
+        try:
+            await c.message.edit_text(
+                "✅ تم التحقق من الاشتراك.\n\n" + t(uid, "welcome_new"),
+                reply_markup=kb,
+            )
+        except Exception:
+            await c.message.answer("✅ تم التحقق من الاشتراك.\n\n" + t(uid, "welcome_new"), reply_markup=kb)
+        await c.answer("✅ تم التحقق، سجّل أو ادخل لحسابك.")
+        return
+    name = user[0].get("player_name") or c.from_user.full_name
+    await show_main_menu(c.message, name, user_id=uid, state=state)
+    await c.answer("✅ تم التحقق، مرحباً!")
 
 @router.callback_query(F.data == "home")
 async def home_callback(c: types.CallbackQuery, state: FSMContext):
