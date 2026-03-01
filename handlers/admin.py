@@ -82,29 +82,27 @@ async def _send_admin_menu(target, uid: int, text: str = None):
 
 @router.callback_query(F.data == "admin_close")
 async def admin_close(c: types.CallbackQuery, state: FSMContext):
-    if not _admin_only(c):
-        return await c.answer("⛔ غير مسموح.", show_alert=True)
-    await state.clear()
-    kb_main = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🏠 القائمة الرئيسية", callback_data="admin_goto_main")]
-    ])
-    try:
-        await c.message.edit_text("✅ تم إغلاق لوحة الإدارة.\n\nاضغط للعودة إلى القائمة الرئيسية:", reply_markup=kb_main)
-    except Exception:
-        await c.message.answer("✅ تم إغلاق لوحة الإدارة.", reply_markup=kb_main)
-    await c.answer()
-
-
-@router.callback_query(F.data == "admin_goto_main")
-async def admin_goto_main(c: types.CallbackQuery, state: FSMContext):
-    """العودة للقائمة الرئيسية بعد إغلاق لوحة الإدارة"""
+    """إغلاق لوحة الإدارة والعودة مباشرة إلى القائمة الرئيسية"""
     if not _admin_only(c):
         return await c.answer("⛔ غير مسموح.", show_alert=True)
     await state.clear()
     from handlers.common import show_main_menu
     user = db_query("SELECT player_name FROM users WHERE user_id = %s", (c.from_user.id,))
     name = user[0]["player_name"] if user else c.from_user.full_name
-    await show_main_menu(c.message, name, c.from_user.id, state=state)
+    await show_main_menu(c.message, name, c.from_user.id, state=state, from_admin=True)
+    await c.answer()
+
+
+@router.callback_query(F.data == "admin_goto_main")
+async def admin_goto_main(c: types.CallbackQuery, state: FSMContext):
+    """العودة للقائمة الرئيسية (للرسائل القديمة التي تحتوي زر القائمة الرئيسية)"""
+    if not _admin_only(c):
+        return await c.answer("⛔ غير مسموح.", show_alert=True)
+    await state.clear()
+    from handlers.common import show_main_menu
+    user = db_query("SELECT player_name FROM users WHERE user_id = %s", (c.from_user.id,))
+    name = user[0]["player_name"] if user else c.from_user.full_name
+    await show_main_menu(c.message, name, c.from_user.id, state=state, from_admin=True)
     await c.answer()
 
 
@@ -340,9 +338,11 @@ async def admin_edit_field_ask(c: types.CallbackQuery, state: FSMContext):
 async def admin_edit_value_done(message: types.Message, state: FSMContext):
     if not is_admin(message.from_user.id):
         return
-    if message.text and message.text.strip() == "/cancel":
+    if message.text and message.text.strip().lower() == "/cancel":
         await state.clear()
-        return await message.answer("تم الإلغاء.")
+        await message.answer("تم الإلغاء.")
+        await _send_admin_menu(message, message.from_user.id)
+        return
     data = await state.get_data()
     target_uid = data.get("admin_edit_uid")
     field = data.get("admin_edit_field")
@@ -371,7 +371,10 @@ async def admin_edit_value_done(message: types.Message, state: FSMContext):
         await state.clear()
         return
     await state.clear()
-    await message.answer(f"✅ تم تحديث الحقل للاعب {target_uid}.")
+    kb_back = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔙 رجوع لقائمة اللاعبين", callback_data="admin_players")]
+    ])
+    await message.answer(f"✅ تم تحديث الحقل للاعب {target_uid}.", reply_markup=kb_back)
 
 
 # --- الغرف المفتوحة والمتروكة ---
