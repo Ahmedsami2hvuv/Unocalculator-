@@ -21,13 +21,13 @@ async def main():
     # 2. إعداد الموزع (Dispatcher) مع ذاكرة مؤقتة للـ States
     dp = Dispatcher(storage=MemoryStorage())
 
-    # 3. ربط الراوترات بالترتيب الصحيح
+    # 3. ربط الراوترات بالترتيب الصحيح (الأدمن أولاً حتى يعمل «بحث برسالة»)
+    dp.include_router(admin_router)
     dp.include_router(common_router)
     dp.include_router(room_2p_router)
     dp.include_router(room_multi_router)
     dp.include_router(calc_router)
     dp.include_router(stats_router)
-    dp.include_router(admin_router)
 
     print("🚀 البوت انطلق بنجاح والبيانات آمنة!")
 
