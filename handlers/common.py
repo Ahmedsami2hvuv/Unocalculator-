@@ -347,25 +347,26 @@ async def cmd_start_with_deeplink(message: types.Message, state: FSMContext):
             if user and user[0].get("is_registered"):
                 await _join_room_by_code(message, code, user[0])
                 return
+            # مستخدم جديد أو موجود لكن غير مسجّل: نحفظ كود الغرفة ونعرض تسجيل/دخول
             if not user:
                 db_query(
                     "INSERT INTO users (user_id, username, is_registered) VALUES (%s, %s, FALSE)",
                     (message.from_user.id, message.from_user.username or ""),
                     commit=True,
                 )
-                await state.update_data(pending_join=code)
-                uid = message.from_user.id
-                lang = get_lang(uid)
-                set_lang(uid, lang)
-                kb = InlineKeyboardMarkup(
-                    inline_keyboard=[
-                        [InlineKeyboardButton(text=t(uid, "btn_register"), callback_data="auth_register")],
-                        [InlineKeyboardButton(text=t(uid, "btn_login"), callback_data="auth_login")],
-                    ]
-                )
-                welcome = t(uid, "welcome_new") + "\n\n" + t(uid, "invite_pending_room")
-                await message.answer(welcome, reply_markup=kb)
-                return
+            await state.update_data(pending_join=code)
+            uid = message.from_user.id
+            lang = get_lang(uid)
+            set_lang(uid, lang)
+            kb = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(text=t(uid, "btn_register"), callback_data="auth_register")],
+                    [InlineKeyboardButton(text=t(uid, "btn_login"), callback_data="auth_login")],
+                ]
+            )
+            welcome = t(uid, "welcome_new") + "\n\n" + t(uid, "invite_pending_room")
+            await message.answer(welcome, reply_markup=kb)
+            return
     try:
         await message.delete()
     except Exception:
