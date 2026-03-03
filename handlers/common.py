@@ -3096,6 +3096,7 @@ async def on_check_channel_sub(c: types.CallbackQuery, state: FSMContext):
             m.from_user = c.from_user
             m.answer = c.message.answer
             m.bot = c.bot
+            m.chat = c.message.chat
             await _join_room_by_code(m, pending_code, user[0])
             await c.answer("✅ تم التحقق، تم انضمامك للغرفة!")
             return
