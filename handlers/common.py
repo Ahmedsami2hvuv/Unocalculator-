@@ -6,7 +6,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
 from database import db_query
 from i18n import t, get_lang, set_lang, TEXTS
-import random, string, json, asyncio
+import random, string, json, asyncio, uuid
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 
 router = Router()
@@ -279,6 +279,63 @@ def prepare_replay_after_game(room_id: str, creator_id: int, max_players: int, s
     ])
     msg = "🏁 انتهت الجولة! اضغط «لعب مرة أخرى» لدعوة نفس الفريق."
     return replay_id, msg, kb
+
+
+def create_replay_session(players: list, room: dict, mode: str, summary_text: str) -> str:
+    """ينشئ جلسة replay واحدة لكل اللاعبين ويخزن الملخص. يُستدعى من room_2p/room_multi عند انتهاء اللعبة."""
+    replay_id = str(uuid.uuid4())[:8]
+    replay_data[replay_id] = {
+        "players": [(p["user_id"], p.get("player_name") or "لاعب") for p in players],
+        "max_players": room.get("max_players", 2),
+        "score_limit": room.get("score_limit", 0),
+        "mode": mode,
+        "creator_id": room.get("creator_id"),
+        "summary": summary_text,
+    }
+    return replay_id
+
+
+def build_game_end_keyboard(replay_id: str, for_user_id: int) -> InlineKeyboardMarkup:
+    """يبني كيبورد نهاية اللعبة: كل اللاعبين مع رمز متابعة (✓ أتابعه، ✓✓ متابعة متبادلة، ➕ لا أتابعه) وزر متابعة/إلغاء."""
+    rdata = replay_data.get(replay_id)
+    if not rdata:
+        return InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🏠 القائمة الرئيسية", callback_data="home")]
+        ])
+    players = rdata.get("players") or []
+    kb = []
+    for pid, pname in players:
+        if pid == for_user_id:
+            continue
+        is_following = db_query(
+            "SELECT 1 FROM follows WHERE follower_id = %s AND following_id = %s",
+            (for_user_id, pid)
+        )
+        is_follower = db_query(
+            "SELECT 1 FROM follows WHERE follower_id = %s AND following_id = %s",
+            (pid, for_user_id)
+        )
+        if is_following and is_follower:
+            icon = "✓✓"
+            btn_text = "إلغاء المتابعة"
+            cb = f"gameend_f_{replay_id}_{pid}"
+        elif is_following:
+            icon = "✓"
+            btn_text = "إلغاء المتابعة"
+            cb = f"gameend_f_{replay_id}_{pid}"
+        else:
+            icon = "➕"
+            btn_text = "متابعة"
+            cb = f"gameend_f_{replay_id}_{pid}"
+        pname_short = (pname or "لاعب")[:20]
+        kb.append([
+            InlineKeyboardButton(text=f"{icon} {pname_short}", callback_data=f"gameend_p_{replay_id}_{pid}"),
+            InlineKeyboardButton(text=btn_text, callback_data=cb)
+        ])
+    kb.append([InlineKeyboardButton(text="🔄 لعب مرة أخرى", callback_data=f"replay_{replay_id}")])
+    kb.append([InlineKeyboardButton(text=t(for_user_id, "btn_home"), callback_data="home")])
+    return InlineKeyboardMarkup(inline_keyboard=kb)
+
 
 # مشاهدون الغرفة (للوضع مشاهدة: room_id -> set(user_id))
 room_spectators = {}
@@ -1545,6 +1602,70 @@ async def _next_round_timeout(room_id, bot):
     await asyncio.sleep(20)
     if room_id in pending_next_round:
         await _start_next_round(room_id, bot)
+
+# --- نهاية اللعبة: تبديل متابعة من نفس الشاشة وإعادة رسم القائمة ---
+@router.callback_query(F.data.startswith("gameend_f_"))
+async def gameend_toggle_follow(c: types.CallbackQuery):
+    """تبديل متابعة/إلغاء من شاشة نهاية اللعبة دون الخروج للبروفايل."""
+    parts = c.data.split("_")
+    if len(parts) < 4:
+        return await c.answer("⚠️ خطأ.", show_alert=True)
+    replay_id = parts[2]
+    target_id = int(parts[3])
+    uid = c.from_user.id
+    if uid == target_id:
+        return await c.answer("🧐 لا يمكنك متابعة نفسك!", show_alert=True)
+    rdata = replay_data.get(replay_id)
+    if not rdata:
+        return await c.answer("⚠️ انتهت صلاحية هذه الشاشة.", show_alert=True)
+    is_following = db_query("SELECT 1 FROM follows WHERE follower_id = %s AND following_id = %s", (uid, target_id))
+    if is_following:
+        db_query("DELETE FROM follows WHERE follower_id = %s AND following_id = %s", (uid, target_id), commit=True)
+        await c.answer("❌ تم إلغاء المتابعة.")
+    else:
+        try:
+            db_query("INSERT INTO follows (follower_id, following_id) VALUES (%s, %s)", (uid, target_id), commit=True)
+            await c.answer("✅ تمت المتابعة بنجاح!")
+        except Exception:
+            await c.answer("⚠️ أنت تتابع هذا اللاعب بالفعل.", show_alert=True)
+    new_kb = build_game_end_keyboard(replay_id, uid)
+    try:
+        await c.message.edit_reply_markup(reply_markup=new_kb)
+    except Exception:
+        await c.message.edit_text(c.message.text or rdata.get("summary", "🏁 انتهت الجولة!"), reply_markup=new_kb)
+
+
+@router.callback_query(F.data.startswith("gameend_p_"))
+async def gameend_open_profile(c: types.CallbackQuery):
+    """فتح بروفايل لاعب من شاشة نهاية اللعبة مع زر رجوع للعبة."""
+    parts = c.data.split("_")
+    if len(parts) < 4:
+        return await c.answer("⚠️ خطأ.", show_alert=True)
+    replay_id = parts[2]
+    target_id = int(parts[3])
+    rdata = replay_data.get(replay_id)
+    if not rdata:
+        return await c.answer("⚠️ انتهت صلاحية هذه الشاشة.", show_alert=True)
+    await process_user_search_by_id(c, target_id)
+    kb = c.message.reply_markup
+    if kb and kb.inline_keyboard:
+        new_rows = list(kb.inline_keyboard)
+        new_rows.append([InlineKeyboardButton(text="🔙 رجوع لشاشة اللعبة", callback_data=f"gameend_back_{replay_id}")])
+        await c.message.edit_reply_markup(reply_markup=InlineKeyboardMarkup(inline_keyboard=new_rows))
+
+
+@router.callback_query(F.data.startswith("gameend_back_"))
+async def gameend_back_to_list(c: types.CallbackQuery):
+    """الرجوع من بروفايل إلى شاشة نهاية اللعبة."""
+    replay_id = c.data.replace("gameend_back_", "").strip()
+    rdata = replay_data.get(replay_id)
+    if not rdata:
+        return await c.answer("⚠️ انتهت صلاحية هذه الشاشة.", show_alert=True)
+    summary = rdata.get("summary", "🏁 انتهت الجولة!")
+    kb = build_game_end_keyboard(replay_id, c.from_user.id)
+    await c.message.edit_text(summary, reply_markup=kb)
+    await c.answer()
+
 
 # طلب الصداقة أُزيل: نستخدم المتابعة الفورية فقط. لو وُجد زر قديم addfrnd_ نحوّله لمتابعة
 @router.callback_query(F.data.startswith("addfrnd_"))
