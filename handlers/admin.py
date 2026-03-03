@@ -1,3 +1,7 @@
+# -*- coding: utf-8 -*-
+"""
+لوحة إدارة البوت. الأدمن فقط (ADMIN_ID من متغيرات البيئة).
+"""
 import os
 import html
 from aiogram import Router, types, F
@@ -115,6 +119,15 @@ async def admin_broadcast_start(c: types.CallbackQuery, state: FSMContext):
     await c.answer()
 
 
+def _row_user_id(r) -> int:
+    """استخراج user_id من صف قاعدة البيانات (ديكت أو tuple)."""
+    if isinstance(r, dict):
+        return int(r.get("user_id") or r.get("USER_ID") or r.get("userid") or 0)
+    if isinstance(r, (list, tuple)) and len(r) > 0:
+        return int(r[0])
+    return 0
+
+
 @router.message(AdminStates.broadcast_text, F.text)
 async def admin_broadcast_send(message: types.Message, state: FSMContext):
     if not is_admin(message.from_user.id):
@@ -128,8 +141,11 @@ async def admin_broadcast_send(message: types.Message, state: FSMContext):
         total = len(rows) if rows else 0
         sent = 0
         for r in rows or []:
+            uid = _row_user_id(r)
+            if not uid:
+                continue
             try:
-                await message.bot.send_message(r["user_id"], f"📢 **اذاعة من الإدارة:**\n\n{text}", parse_mode="Markdown")
+                await message.bot.send_message(int(uid), f"📢 **اذاعة من الإدارة:**\n\n{text}", parse_mode="Markdown")
                 sent += 1
             except Exception:
                 pass
