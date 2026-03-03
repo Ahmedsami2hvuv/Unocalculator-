@@ -394,13 +394,16 @@ def generate_room_code():
 
 
 def _normalize_join_code(payload: str) -> str:
-    """استخراج وتنظيف كود الغرفة من رابط الانضمام (يدعم الترميز والمسافات)."""
+    """استخراج وتنظيف كود الغرفة من رابط الانضمام. يزيل أي رمز زائد (مثل ` أو مسافات)."""
     if not payload or not payload.startswith("join_"):
         return ""
     raw = unquote(payload[5:].strip())
     if not raw:
         return ""
-    return raw.strip()[:15].upper()
+    # كود الغرفة أحرف إنجليزية وأرقام فقط (مثل T736MG). إزالة أي شيء آخر يلصق بالرابط
+    allowed = set(string.ascii_letters + string.digits)
+    code = "".join(c for c in raw if c in allowed)[:15]
+    return code.upper() if code else ""
 
 
 @router.message(Command("start"))
