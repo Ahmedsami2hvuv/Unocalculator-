@@ -309,13 +309,20 @@ def create_replay_session(players: list, room: dict, mode: str, summary_text: st
 
 
 def build_game_end_keyboard(replay_id: str, for_user_id: int) -> InlineKeyboardMarkup:
-    """يبني كيبورد نهاية اللعبة: كل اللاعبين مع رمز متابعة (✓ أتابعه، ✓✓ متابعة متبادلة، ➕ لا أتابعه) وزر متابعة/إلغاء."""
+    """كيبورد نهاية اللعبة: كل اللاعبين يظهرون مع حالة المتابعة (✓ أتابعه، ✓✓ نتابع بعض، 📥 يتابعني فقط، ➕ لا متابعة) وزر متابعة/إلغاء."""
     rdata = replay_data.get(replay_id)
     if not rdata:
         return InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🏠 القائمة الرئيسية", callback_data="home")]
         ])
     players = rdata.get("players") or []
+    if not players and rdata.get("player_ids"):
+        for pid in rdata["player_ids"]:
+            if pid == for_user_id:
+                continue
+            row = db_query("SELECT player_name FROM users WHERE user_id = %s", (pid,))
+            pname = (row[0]["player_name"] if row else None) or "لاعب"
+            players.append((pid, pname))
     kb = []
     for pid, pname in players:
         if pid == for_user_id:
@@ -330,19 +337,28 @@ def build_game_end_keyboard(replay_id: str, for_user_id: int) -> InlineKeyboardM
         )
         if is_following and is_follower:
             icon = "✓✓"
+            status_label = "نتابع بعض"
             btn_text = "إلغاء المتابعة"
             cb = f"gameend_f_{replay_id}_{pid}"
         elif is_following:
             icon = "✓"
+            status_label = "أتابعه"
             btn_text = "إلغاء المتابعة"
+            cb = f"gameend_f_{replay_id}_{pid}"
+        elif is_follower:
+            icon = "📥"
+            status_label = "يتابعني فقط"
+            btn_text = "متابعة"
             cb = f"gameend_f_{replay_id}_{pid}"
         else:
             icon = "➕"
+            status_label = ""
             btn_text = "متابعة"
             cb = f"gameend_f_{replay_id}_{pid}"
-        pname_short = (pname or "لاعب")[:20]
+        pname_short = (pname or "لاعب")[:16]
+        row_label = f"{icon} {pname_short}" + (f" ({status_label})" if status_label else "")
         kb.append([
-            InlineKeyboardButton(text=f"{icon} {pname_short}", callback_data=f"gameend_p_{replay_id}_{pid}"),
+            InlineKeyboardButton(text=row_label, callback_data=f"gameend_p_{replay_id}_{pid}"),
             InlineKeyboardButton(text=btn_text, callback_data=cb)
         ])
     kb.append([InlineKeyboardButton(text="🔄 لعب مرة أخرى", callback_data=f"replay_{replay_id}")])
@@ -554,6 +570,9 @@ async def on_play_friends(c: types.CallbackQuery):
     kb = [
         [InlineKeyboardButton(text="➕ إنشاء غرفة", callback_data="room_create_start")],
         [InlineKeyboardButton(text="🔑 دخول بكود", callback_data="room_join_input")],
+        [InlineKeyboardButton(text="🚪 الغرف المتوفرة", callback_data="available_rooms")],
+        [InlineKeyboardButton(text="📋 الغرف المفتوحة", callback_data="my_open_rooms")],
+        [InlineKeyboardButton(text=t(uid, "btn_public_rooms"), callback_data="public_rooms")],
         [InlineKeyboardButton(text="🔙 رجوع", callback_data="home")]
     ]
     await c.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="Markdown")
