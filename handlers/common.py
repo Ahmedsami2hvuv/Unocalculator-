@@ -7,6 +7,7 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeybo
 from database import db_query
 from i18n import t, get_lang, set_lang, TEXTS
 import random, string, json, asyncio, uuid
+from urllib.parse import unquote
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 
 router = Router()
@@ -392,25 +393,39 @@ def generate_room_code():
     return ''.join(random.choices(string.ascii_uppercase + string.digits, k=5))
 
 
+def _normalize_join_code(payload: str) -> str:
+    """استخراج وتنظيف كود الغرفة من رابط الانضمام (يدعم الترميز والمسافات)."""
+    if not payload or not payload.startswith("join_"):
+        return ""
+    raw = unquote(payload[5:].strip())
+    if not raw:
+        return ""
+    return raw.strip()[:15].upper()
+
+
 @router.message(Command("start"))
 async def cmd_start_with_deeplink(message: types.Message, state: FSMContext):
     """معالجة /start مع رابط الدعوة: /start join_ROOMCODE"""
     text = (message.text or "").strip()
     parts = text.split(maxsplit=1)
     if len(parts) >= 2 and parts[1].startswith("join_"):
-        code = parts[1][5:].strip()
+        code = _normalize_join_code(parts[1])
         if code:
             user = db_query("SELECT * FROM users WHERE user_id = %s", (message.from_user.id,))
             if user and user[0].get("is_registered"):
                 await _join_room_by_code(message, code, user[0])
                 return
-            # مستخدم جديد أو موجود لكن غير مسجّل: نحفظ كود الغرفة ونعرض تسجيل/دخول
+            # مستخدم جديد أو موجود لكن غير مسجّل: نحفظ كود الغرفة (state + DB) ونعرض تسجيل/دخول
             if not user:
                 db_query(
                     "INSERT INTO users (user_id, username, is_registered) VALUES (%s, %s, FALSE)",
                     (message.from_user.id, message.from_user.username or ""),
                     commit=True,
                 )
+            try:
+                db_query("UPDATE users SET pending_room_code = %s WHERE user_id = %s", (code, message.from_user.id), commit=True)
+            except Exception:
+                pass
             await state.update_data(pending_join=code)
             uid = message.from_user.id
             lang = get_lang(uid)
@@ -670,10 +685,21 @@ async def complete_profile_password_handler(message: types.Message, state: FSMCo
     data = await state.get_data()
     pending_join = data.get('pending_join')
     await state.clear()
+    if not pending_join:
+        try:
+            row = db_query("SELECT pending_room_code FROM users WHERE user_id = %s", (uid,))
+            if row and row[0].get("pending_room_code"):
+                pending_join = _normalize_join_code("join_" + str(row[0]["pending_room_code"]))
+        except Exception:
+            pass
     await message.answer(t(uid, "profile_complete", name=name, password=password))
     if pending_join:
         user_data = db_query("SELECT * FROM users WHERE user_id = %s", (uid,))
         if user_data:
+            try:
+                db_query("UPDATE users SET pending_room_code = NULL WHERE user_id = %s", (uid,), commit=True)
+            except Exception:
+                pass
             await _join_room_by_code(message, pending_join, user_data[0])
         return
 
@@ -837,10 +863,21 @@ async def login_password(message: types.Message, state: FSMContext):
     data_state = await state.get_data()
     pending_join = data_state.get('pending_join')
     await state.clear()
+    if not pending_join:
+        try:
+            row = db_query("SELECT pending_room_code FROM users WHERE user_id = %s", (uid,))
+            if row and row[0].get("pending_room_code"):
+                pending_join = _normalize_join_code("join_" + str(row[0]["pending_room_code"]))
+        except Exception:
+            pass
     await message.answer(t(uid, "login_success", name=name))
     if pending_join:
         user_data = db_query("SELECT * FROM users WHERE user_id = %s", (uid,))
         if user_data:
+            try:
+                db_query("UPDATE users SET pending_room_code = NULL WHERE user_id = %s", (uid,), commit=True)
+            except Exception:
+                pass
             await _join_room_by_code(message, pending_join, user_data[0])
         return
     await show_main_menu(message, name, user_id=uid)
@@ -895,6 +932,7 @@ async def menu_friends(c: types.CallbackQuery):
     kb = [
         [InlineKeyboardButton(text=t(uid, "➕ إنشاء غرفة"), callback_data="room_create_start")],
         [InlineKeyboardButton(text=t(uid, "🚪 انضمام لغرفة"), callback_data="room_join_input")],
+        [InlineKeyboardButton(text="🚪 الغرف المتوفرة", callback_data="available_rooms")],
         [InlineKeyboardButton(text=t(uid, "الغرف المفتوحة"), callback_data="my_open_rooms")],
         [InlineKeyboardButton(text=t(uid, "btn_public_rooms"), callback_data="public_rooms")],
         [InlineKeyboardButton(text=t(uid, "الرجوع"), callback_data="home")]
@@ -1141,6 +1179,109 @@ async def finalize_room(c: types.CallbackQuery, state: FSMContext):
     msg = f"✅ تم إنشاء الغرفة!\n\n👥 اختر اللاعبين الذين تتابعهم لإرسال دعوة، أو استخدم الرابط لأي لاعب:\n{link}"
     await c.message.edit_text(msg, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_invite))
     await state.clear()
+
+@router.callback_query(F.data == "available_rooms")
+async def available_rooms_list(c: types.CallbackQuery):
+    """الغرف المتوفرة: انضمام لغرفة، انسحاب من غرفة، أو إلغاء غرفي."""
+    uid = c.from_user.id
+    text_parts = ["🚪 **الغرف المتوفرة**\n"]
+    kb = []
+
+    # غرف مفتوحة يمكن الانضمام لها (ليست مليئة وليست أنا فيها)
+    try:
+        all_waiting = db_query("""
+            SELECT r.room_id, r.max_players, r.creator_id,
+                   (SELECT count(*) FROM room_players rp WHERE rp.room_id = r.room_id) as p_count
+            FROM rooms r
+            WHERE r.status = 'waiting'
+            ORDER BY r.room_id DESC LIMIT 25
+        """)
+    except Exception:
+        all_waiting = []
+    in_room_codes = set()
+    my_created = []
+    joinable = []
+    for r in all_waiting or []:
+        code = r.get("room_id", "") or ""
+        cur = int(r.get("p_count") or 0)
+        mx = int(r.get("max_players") or 2)
+        is_mine = r.get("creator_id") == uid
+        am_in = db_query("SELECT 1 FROM room_players WHERE room_id = %s AND user_id = %s", (code, uid))
+        if am_in:
+            in_room_codes.add(code)
+        if is_mine:
+            my_created.append((code, cur, mx))
+        elif cur < mx and not am_in:
+            joinable.append((code, cur, mx))
+
+    if joinable:
+        text_parts.append("\n📥 **انضم إلى غرفة:**")
+        for code, cur, mx in joinable[:15]:
+            kb.append([InlineKeyboardButton(text=f"➕ انضم — {code} ({cur}/{mx})", callback_data=f"join_public_{code}")])
+
+    if in_room_codes:
+        text_parts.append("\n📤 **غرف أنت فيها (انسحاب):**")
+        for code in list(in_room_codes)[:10]:
+            kb.append([InlineKeyboardButton(text=f"🚪 انسحاب من {code}", callback_data=f"leave_room_{code}")])
+
+    if my_created:
+        text_parts.append("\n🛏 **غرفك المفتوحة (إلغاء):**")
+        for code, cur, mx in my_created[:10]:
+            kb.append([InlineKeyboardButton(text=f"❌ إلغاء {code} ({cur}/{mx})", callback_data=f"closeroom_{code}")])
+        if len(my_created) > 1:
+            kb.append([InlineKeyboardButton(text="🗑 إلغاء كل غرفي", callback_data="close_all_my_rooms")])
+
+    if not kb:
+        text_parts.append("\nلا توجد غرف مفتوحة حالياً. أنشئ غرفة أو انضم بكود.")
+    kb.append([InlineKeyboardButton(text=t(uid, "btn_back"), callback_data="menu_friends")])
+    text = "\n".join(text_parts)
+    await c.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="Markdown")
+    await c.answer()
+
+
+@router.callback_query(F.data.startswith("leave_room_"))
+async def leave_room_callback(c: types.CallbackQuery):
+    """انسحاب اللاعب من غرفة (قبل بدء اللعب)."""
+    code = c.data.replace("leave_room_", "", 1).strip()
+    uid = c.from_user.id
+    room = db_query("SELECT * FROM rooms WHERE room_id = %s AND status = 'waiting'", (code,))
+    if not room:
+        return await c.answer(t(uid, "room_gone"), show_alert=True)
+    in_room = db_query("SELECT 1 FROM room_players WHERE room_id = %s AND user_id = %s", (code, uid))
+    if not in_room:
+        return await c.answer(t(uid, "room_gone"), show_alert=True)
+    u_name = db_query("SELECT player_name FROM users WHERE user_id = %s", (uid,))
+    u_name = u_name[0]["player_name"] if u_name else c.from_user.full_name
+    db_query("DELETE FROM room_players WHERE room_id = %s AND user_id = %s", (code, uid), commit=True)
+    creator_id = room[0]["creator_id"]
+    p_count = db_query("SELECT count(*) as count FROM room_players WHERE room_id = %s", (code,))[0]["count"]
+    try:
+        await c.bot.send_message(creator_id, f"🚪 انسحب {u_name} من الغرفة. الباقي: {p_count} لاعبين.")
+    except Exception:
+        pass
+    await available_rooms_list(c)
+
+
+@router.callback_query(F.data == "close_all_my_rooms")
+async def close_all_my_rooms_callback(c: types.CallbackQuery):
+    """إلغاء كل الغرف التي أنشأها المستخدم (حالة waiting)."""
+    uid = c.from_user.id
+    rooms = db_query("SELECT room_id FROM rooms WHERE creator_id = %s AND status = 'waiting'", (uid,))
+    if not rooms:
+        return await c.answer(t(uid, "no_open_rooms"), show_alert=True)
+    for r in rooms:
+        rid = r["room_id"]
+        players = db_query("SELECT user_id FROM room_players WHERE room_id = %s AND user_id != %s", (rid, uid))
+        for p in players or []:
+            try:
+                await c.bot.send_message(p["user_id"], t(p["user_id"], "room_closed_notification"))
+            except Exception:
+                pass
+        db_query("DELETE FROM room_players WHERE room_id = %s", (rid,), commit=True)
+        db_query("DELETE FROM rooms WHERE room_id = %s", (rid,), commit=True)
+    await c.answer(f"✅ تم إلغاء {len(rooms)} غرفة.", show_alert=True)
+    await available_rooms_list(c)
+
 
 @router.callback_query(F.data == "public_rooms")
 async def list_public_rooms(c: types.CallbackQuery):
