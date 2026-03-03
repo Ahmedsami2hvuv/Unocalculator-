@@ -120,12 +120,37 @@ async def admin_broadcast_start(c: types.CallbackQuery, state: FSMContext):
 
 
 def _row_user_id(r) -> int:
-    """استخراج user_id من صف قاعدة البيانات (ديكت أو tuple)."""
+    """استخراج user_id من صف قاعدة البيانات (ديكت أو tuple أو أي شكل)."""
+    if r is None:
+        return 0
     if isinstance(r, dict):
-        return int(r.get("user_id") or r.get("USER_ID") or r.get("userid") or 0)
+        uid = r.get("user_id") or r.get("USER_ID") or r.get("userid")
+        if uid is not None:
+            return int(uid)
+        if r:
+            val = next(iter(r.values()), None)
+            if val is not None:
+                return int(val)
+        return 0
     if isinstance(r, (list, tuple)) and len(r) > 0:
         return int(r[0])
+    if hasattr(r, "user_id"):
+        return int(getattr(r, "user_id", 0) or 0)
+    if hasattr(r, "__getitem__"):
+        try:
+            return int(r[0])
+        except (IndexError, KeyError, TypeError):
+            pass
     return 0
+
+
+def _admin_broadcast_done_kb():
+    """أزرار بعد انتهاء الإذاعة: اذاعة جديدة، رجوع، القائمة الرئيسية."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📢 اذاعة جديدة", callback_data="admin_broadcast")],
+        [InlineKeyboardButton(text="🔙 رجوع", callback_data="admin_back")],
+        [InlineKeyboardButton(text="🏠 القائمة الرئيسية", callback_data="admin_close")],
+    ])
 
 
 @router.message(AdminStates.broadcast_text, F.text)
@@ -134,26 +159,34 @@ async def admin_broadcast_send(message: types.Message, state: FSMContext):
         return
     if message.text and message.text.strip() == "/cancel":
         await state.clear()
-        return await message.answer("تم الإلغاء.")
+        return await message.answer("تم الإلغاء.", reply_markup=_admin_broadcast_done_kb())
     text = message.text or ""
     try:
-        rows = db_query("SELECT user_id FROM users WHERE user_id IS NOT NULL")
-        total = len(rows) if rows else 0
+        raw_rows = db_query("SELECT * FROM users WHERE user_id IS NOT NULL")
+        rows = list(raw_rows) if raw_rows else []
+        if not rows:
+            await state.clear()
+            await message.answer("❌ لا يوجد لاعبون في القاعدة.", reply_markup=_admin_broadcast_done_kb())
+            return
+        total = len(rows)
         sent = 0
-        for r in rows or []:
+        for r in rows:
             uid = _row_user_id(r)
             if not uid:
                 continue
             try:
-                await message.bot.send_message(int(uid), f"📢 **اذاعة من الإدارة:**\n\n{text}", parse_mode="Markdown")
+                await message.bot.send_message(uid, f"📢 **اذاعة من الإدارة:**\n\n{text}", parse_mode="Markdown")
                 sent += 1
             except Exception:
                 pass
         await state.clear()
-        await message.answer(f"✅ تم إرسال الإذاعة إلى {sent}/{total} لاعب.")
+        await message.answer(
+            f"✅ تم إرسال الإذاعة إلى {sent}/{total} لاعب.",
+            reply_markup=_admin_broadcast_done_kb()
+        )
     except Exception as e:
-        await message.answer(f"❌ خطأ: {e}")
         await state.clear()
+        await message.answer(f"❌ خطأ: {e}", reply_markup=_admin_broadcast_done_kb())
 
 
 # --- إحصائيات ---
