@@ -43,6 +43,18 @@ async def channel_subscribe_message_middleware(handler, event: types.Message, da
     user_id = event.from_user.id if event.from_user else None
     if not user_id:
         return await handler(event, data)
+    # إذا الرسالة /start مع رابط انضمام لغرفة: نحفظ الكود قبل عرض اشتراك القناة حتى لا يضيع
+    text = (event.text or "").strip()
+    if text.startswith("/start") and "join_" in text:
+        parts = text.split(maxsplit=1)
+        if len(parts) >= 2 and parts[1].startswith("join_"):
+            code = _normalize_join_code(parts[1])
+            if code:
+                try:
+                    db_query("INSERT INTO users (user_id, username, is_registered) VALUES (%s, %s, FALSE) ON CONFLICT (user_id) DO NOTHING", (user_id, event.from_user.username or ""), commit=True)
+                    db_query("UPDATE users SET pending_room_code = %s WHERE user_id = %s", (code, user_id), commit=True)
+                except Exception:
+                    pass
     if await is_channel_member(event.bot, user_id):
         return await handler(event, data)
     kb = _channel_subscribe_kb()
@@ -3071,6 +3083,24 @@ async def on_check_channel_sub(c: types.CallbackQuery, state: FSMContext):
             await c.message.answer("✅ تم التحقق من الاشتراك.\n\n" + t(uid, "welcome_new"), reply_markup=kb)
         await c.answer("✅ تم التحقق، سجّل أو ادخل لحسابك.")
         return
+    # إذا كان لديه دعوة انضمام محفوظة (ضغط الرابط قبل الاشتراك): ننضمّه للغرفة الآن
+    pending_code = None
+    try:
+        if user[0].get("pending_room_code"):
+            pending_code = _normalize_join_code("join_" + str(user[0]["pending_room_code"]))
+        if pending_code:
+            db_query("UPDATE users SET pending_room_code = NULL WHERE user_id = %s", (uid,), commit=True)
+            class _FakeMsg:
+                pass
+            m = _FakeMsg()
+            m.from_user = c.from_user
+            m.answer = c.message.answer
+            m.bot = c.bot
+            await _join_room_by_code(m, pending_code, user[0])
+            await c.answer("✅ تم التحقق، تم انضمامك للغرفة!")
+            return
+    except Exception:
+        pass
     name = user[0].get("player_name") or c.from_user.full_name
     await show_main_menu(c.message, name, user_id=uid, state=state)
     await c.answer("✅ تم التحقق، مرحباً!")
