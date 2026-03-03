@@ -1084,15 +1084,18 @@ async def create_friends_room(c: types.CallbackQuery, state: FSMContext):
     bot_info = await c.bot.get_me()
     invite_link = f"https://t.me/{bot_info.username}?start=join_{room_id}"
     
+    # عرض الرابط بدون علامات ` حتى يعمل النسخ واللصق (داخل تليجرام أو خارجه)
     text = (
-    f"✅ **تم إنشاء الغرفة بنجاح!**\n\n"
+    f"✅ تم إنشاء الغرفة بنجاح!\n\n"
     f"🎯 السقف: {limit}\n"
     f"👥 اللاعبين: {p_count}\n\n"
-    f"🔗 **رابط الدعوة المباشر:**\n`{invite_link}`\n\n"
-    f"أرسل الرابط لصديقك، وبمجرد الضغط عليه سيدخل للعبة فوراً!"
+    f"🔗 رابط الدعوة (انسخه أو شاركه):\n{invite_link}\n\n"
+    f"أرسل الرابط لصديقك؛ يعمل بالنسخ واللصق أو بزر المشاركة."
     )
-    kb = [[InlineKeyboardButton(text="공 مشاركة الرابط", url=f"https://t.me/share/url?url={invite_link}&text=تعال العب وياي اونو!")] ,
-    [InlineKeyboardButton(text="🏠 الرئيسية", callback_data="home")]]
+    kb = [
+        [InlineKeyboardButton(text="📤 مشاركة الرابط", url=f"https://t.me/share/url?url={invite_link}&text=تعال العب وياي اونو!")],
+        [InlineKeyboardButton(text="🏠 الرئيسية", callback_data="home")]
+    ]
     
     await c.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
 
