@@ -120,27 +120,30 @@ async def admin_broadcast_start(c: types.CallbackQuery, state: FSMContext):
 
 
 def _row_user_id(r) -> int:
-    """استخراج user_id من صف قاعدة البيانات (ديكت أو tuple أو أي شكل)."""
+    """استخراج user_id من صف قاعدة البيانات. RealDictCursor يعيد dict بمفتاح user_id."""
     if r is None:
         return 0
-    if isinstance(r, dict):
-        uid = r.get("user_id") or r.get("USER_ID") or r.get("userid")
-        if uid is not None:
-            return int(uid)
-        if r:
-            val = next(iter(r.values()), None)
-            if val is not None:
-                return int(val)
-        return 0
-    if isinstance(r, (list, tuple)) and len(r) > 0:
-        return int(r[0])
-    if hasattr(r, "user_id"):
-        return int(getattr(r, "user_id", 0) or 0)
-    if hasattr(r, "__getitem__"):
-        try:
+    try:
+        if hasattr(r, "get") and callable(r.get):
+            uid = r.get("user_id") or r.get("USER_ID") or r.get("userid")
+            if uid is not None:
+                return int(uid)
+            if hasattr(r, "items"):
+                for k, v in r.items():
+                    if str(k).lower() == "user_id" and v is not None:
+                        return int(v)
+            if r:
+                return int(next(iter(r.values())))
+        if hasattr(r, "user_id"):
+            v = getattr(r, "user_id", None)
+            if v is not None:
+                return int(v)
+        if hasattr(r, "__getitem__"):
             return int(r[0])
-        except (IndexError, KeyError, TypeError):
-            pass
+        if hasattr(r, "__iter__") and not isinstance(r, (str, bytes)):
+            return int(next(iter(r)))
+    except (IndexError, KeyError, TypeError, ValueError, StopIteration):
+        pass
     return 0
 
 
@@ -162,7 +165,7 @@ async def admin_broadcast_send(message: types.Message, state: FSMContext):
         return await message.answer("تم الإلغاء.", reply_markup=_admin_broadcast_done_kb())
     text = message.text or ""
     try:
-        raw_rows = db_query("SELECT * FROM users WHERE user_id IS NOT NULL")
+        raw_rows = db_query("SELECT user_id FROM users WHERE user_id IS NOT NULL")
         rows = list(raw_rows) if raw_rows else []
         if not rows:
             await state.clear()
@@ -170,15 +173,18 @@ async def admin_broadcast_send(message: types.Message, state: FSMContext):
             return
         total = len(rows)
         sent = 0
+        import logging
+        log = logging.getLogger(__name__)
         for r in rows:
             uid = _row_user_id(r)
             if not uid:
+                log.warning("Broadcast: could not get user_id from row type=%s row=%s", type(r).__name__, r)
                 continue
             try:
-                await message.bot.send_message(uid, f"📢 **اذاعة من الإدارة:**\n\n{text}", parse_mode="Markdown")
+                await message.bot.send_message(int(uid), f"📢 **اذاعة من الإدارة:**\n\n{text}", parse_mode="Markdown")
                 sent += 1
-            except Exception:
-                pass
+            except Exception as e:
+                log.warning("Broadcast: send to %s failed: %s", uid, e)
         await state.clear()
         await message.answer(
             f"✅ تم إرسال الإذاعة إلى {sent}/{total} لاعب.",
