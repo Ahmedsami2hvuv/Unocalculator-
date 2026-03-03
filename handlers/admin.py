@@ -181,7 +181,7 @@ async def admin_broadcast_send(message: types.Message, state: FSMContext):
                 log.warning("Broadcast: could not get user_id from row type=%s row=%s", type(r).__name__, r)
                 continue
             try:
-                await message.bot.send_message(int(uid), f"📢 **اذاعة من الإدارة:**\n\n{text}", parse_mode="Markdown")
+                await message.bot.send_message(int(uid), f"📢 اذاعة من الإدارة:\n\n{text}")
                 sent += 1
             except Exception as e:
                 log.warning("Broadcast: send to %s failed: %s", uid, e)
