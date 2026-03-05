@@ -3343,15 +3343,27 @@ def _get_player_name_for_post(user_id: int, full_name: str = None) -> str:
     return name
 
 
+def _normalize_channel_target():
+    """يرجع chat_id أو @username للقناة (معرف سالب أو يوزر)."""
+    raw = PUBLISH_CHANNEL_ID
+    if raw is not None:
+        try:
+            ch = int(raw)
+            if ch > 0:
+                ch = -ch
+            return ch
+        except (TypeError, ValueError):
+            pass
+    if PUBLISH_CHANNEL_USERNAME:
+        return f"@{PUBLISH_CHANNEL_USERNAME.lstrip('@')}"
+    return None
+
+
 async def _publish_media_to_channel(bot, message: types.Message, name: str, channel_id=None) -> bool:
     """ينشر محتوى الرسالة (نص/صورة/صوت/...) في قناة النشر. يُرجع True عند النجاح."""
-    raw = channel_id or PUBLISH_CHANNEL_ID
-    if not raw:
+    ch = channel_id if channel_id is not None else _normalize_channel_target()
+    if not ch:
         return False
-    try:
-        ch = int(raw)
-    except (TypeError, ValueError):
-        ch = raw
     cap = f"👤 **{name}**\n\n{(message.caption or '').strip()}" if (message.caption or "").strip() else f"👤 **{name}**"
     if cap.endswith("\n\n"):
         cap = cap.rstrip()
@@ -3402,13 +3414,14 @@ async def player_post_receive_text(message: types.Message, state: FSMContext):
     if not ok:
         return await message.answer(f"⛔ {reason}")
     name = _get_player_name_for_post(message.from_user.id, message.from_user.full_name)
+    text_to_send = f"👤 **{name}**\n\n{text}"
+    chat_target = _normalize_channel_target()
+    if not chat_target:
+        return await message.answer("⚠️ نشر المنشورات غير متاح حالياً.")
     try:
-        ch_id = int(PUBLISH_CHANNEL_ID) if PUBLISH_CHANNEL_ID else None
-        if not ch_id:
-            return await message.answer("⚠️ نشر المنشورات غير متاح حالياً.")
         await message.bot.send_message(
-            chat_id=ch_id,
-            text=f"👤 **{name}**\n\n{text}",
+            chat_id=chat_target,
+            text=text_to_send,
             parse_mode="Markdown"
         )
         await message.answer("✅ تم نشر منشورك في القناة.")
@@ -3526,4 +3539,3 @@ async def home_callback(c: types.CallbackQuery, state: FSMContext):
     # تشغيل المنيو الرئيسي عند الضغط على عودة
     await show_main_menu(c.message, name, user_id=c.from_user.id, state=state)
     await c.answer()
-
