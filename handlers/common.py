@@ -493,32 +493,38 @@ def check_post_content(text):
 
 
 persistent_kb = ReplyKeyboardMarkup(
-    keyboard=[[KeyboardButton(text="/start"), KeyboardButton(text="🧹 تنظيف الرسائل")]],
+    keyboard=[[KeyboardButton(text="ستارت"), KeyboardButton(text="🧹 تنظيف الرسائل")]],
     resize_keyboard=True,
     persistent=True
 )
 
 
-@router.message(F.text == "🧹 تنظيف الرسائل")
-async def clean_chat_messages(message: types.Message):
-    """يمسح جميع رسائل البوت في المحادثة (تنظيف سجل الرسائل)"""
+async def _clean_then_show_menu(message: types.Message):
+    """مسح رسائل البوت في المحادثة ثم عرض القائمة. يستخدمه زرّا ستارت وتنظيف الرسائل."""
     chat_id = message.chat.id
     current_msg_id = message.message_id
-    deleted_count = 0
-    
     for mid in range(current_msg_id, max(current_msg_id - 200, 0), -1):
         try:
             await message.bot.delete_message(chat_id, mid)
-            deleted_count += 1
         except Exception:
             pass
-
     name = message.from_user.full_name
     user = db_query("SELECT player_name FROM users WHERE user_id = %s", (message.from_user.id,))
     if user:
         name = user[0]['player_name']
-    
     await show_main_menu(message, name, user_id=message.from_user.id, cleanup=False)
+
+
+@router.message(F.text == "🧹 تنظيف الرسائل")
+async def clean_chat_messages(message: types.Message):
+    """زر تنظيف الرسائل: مسح الرسائل ثم القائمة."""
+    await _clean_then_show_menu(message)
+
+
+@router.message(F.text == "ستارت")
+async def start_button(message: types.Message):
+    """زر ستارت: نفس عمل زر تنظيف الرسائل (مسح الرسائل ثم القائمة)."""
+    await _clean_then_show_menu(message)
 
 
 class FilterInRoom(BaseFilter):
@@ -666,37 +672,6 @@ async def cmd_start_with_deeplink(message: types.Message, state: FSMContext):
     name = user[0]["player_name"] if user else message.from_user.full_name
     await show_main_menu(message, name, user_id=uid, state=state)
 
-
-@router.message(F.text == "ستارت")
-async def quick_start_button(message: types.Message, state: FSMContext):
-    """نفس سلوك /start وزر التنظيف: عرض القائمة فوراً بدون حذف الرسالة (لتجنب التأخير)."""
-    uid = message.from_user.id
-    try:
-        db_query("UPDATE users SET username = %s WHERE user_id = %s", (message.from_user.username or "", uid), commit=True)
-    except Exception:
-        pass
-    user = db_query("SELECT * FROM users WHERE user_id = %s", (uid,))
-    if not user:
-        try:
-            db_query(
-                "INSERT INTO users (user_id, username, is_registered) VALUES (%s, %s, FALSE) ON CONFLICT (user_id) DO NOTHING",
-                (uid, message.from_user.username or ""),
-                commit=True,
-            )
-        except Exception:
-            pass
-        user = db_query("SELECT * FROM users WHERE user_id = %s", (uid,))
-    if user and user[0].get("logged_out") in (True, 1, "t", "true"):
-        kb = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [InlineKeyboardButton(text=t(uid, "btn_register"), callback_data="auth_register")],
-                [InlineKeyboardButton(text=t(uid, "btn_login"), callback_data="auth_login")],
-            ]
-        )
-        await message.answer(t(uid, "welcome_new"), reply_markup=kb)
-        return
-    name = user[0]["player_name"] if user else message.from_user.full_name
-    await show_main_menu(message, name, user_id=uid, state=state)
 
 @router.message(RoomStates.upgrade_username)
 async def process_upgrade_username(message: types.Message, state: FSMContext):
