@@ -1,6 +1,6 @@
 import os
 from aiogram import Router, types, F
-from aiogram.filters import Command
+from aiogram.filters import Command, BaseFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
@@ -369,6 +369,27 @@ def build_game_end_keyboard(replay_id: str, for_user_id: int) -> InlineKeyboardM
 # مشاهدون الغرفة (للوضع مشاهدة: room_id -> set(user_id))
 room_spectators = {}
 
+
+def get_user_current_room(user_id: int):
+    """إذا كان اللاعب داخل غرفة (انتظار أو لعب)، يُرجع (room_id, room, players) وإلا None."""
+    rp = db_query(
+        """SELECT rp.room_id, rp.player_name
+           FROM room_players rp
+           INNER JOIN rooms r ON r.room_id = rp.room_id
+           WHERE rp.user_id = %s AND r.status IN ('waiting', 'playing')
+           LIMIT 1""",
+        (user_id,)
+    )
+    if not rp:
+        return None
+    room_id = rp[0]["room_id"]
+    room = db_query("SELECT * FROM rooms WHERE room_id = %s", (room_id,))
+    if not room:
+        return None
+    players = db_query("SELECT user_id, player_name FROM room_players WHERE room_id = %s", (room_id,))
+    return (room_id, room[0], players or [])
+
+
 class RoomStates(StatesGroup):
     wait_for_code = State()
     # الحالات الجديدة للتسجيل المطور والترقية
@@ -416,6 +437,43 @@ async def clean_chat_messages(message: types.Message):
         name = user[0]['player_name']
     
     await show_main_menu(message, name, user_id=message.from_user.id, cleanup=False)
+
+
+class FilterInRoom(BaseFilter):
+    """يمرّر فقط إذا كان المرسل داخل غرفة (انتظار أو لعب)."""
+    async def __call__(self, message: types.Message) -> bool:
+        return get_user_current_room(message.from_user.id) is not None
+
+
+@router.message(F.text, FilterInRoom())
+async def room_chat_broadcast(message: types.Message):
+    """نظام محادثة الغرفة: أي رسالة من لاعب داخل الغرفة تُذاع للباقين بصيغة (اسم اللاعب) ثم (الرسالة) في رسالة واحدة."""
+    if not message.text or (message.text.strip().startswith("/") and message.text.strip().lower() != "/start"):
+        return
+    info = get_user_current_room(message.from_user.id)
+    if not info:
+        return
+    room_id, room, players = info
+    sender_name = None
+    for p in players:
+        if p["user_id"] == message.from_user.id:
+            sender_name = p.get("player_name") or message.from_user.full_name or "لاعب"
+            break
+    if not sender_name:
+        sender_name = message.from_user.full_name or "لاعب"
+    text = (message.text or "").strip()
+    if not text:
+        return
+    # رسالة واحدة: اسم اللاعب (بالأونو) ثم الرسالة
+    chat_msg = f"👤 {sender_name}\n\n{text}"
+    for p in players:
+        if p["user_id"] == message.from_user.id:
+            continue
+        try:
+            await message.bot.send_message(p["user_id"], chat_msg)
+        except Exception:
+            pass
+
 
 def generate_room_code():
     return ''.join(random.choices(string.ascii_uppercase + string.digits, k=5))
