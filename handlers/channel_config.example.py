@@ -1,12 +1,7 @@
 # انسخ هذا الملف إلى channel_config.py وعدّل القيم
-# قناة نشر نتائج المباريات (معرف القناة أو الرقم مثل -100xxxxxxxxxx)
-RESULTS_CHANNEL_ID = None  # مثال: -1001234567890 أو "@channel_username"
-
-# قناة منشورات اللاعبين (لنشر نتائج اللاعبين + منشوراتهم)
-PLAYER_POSTS_CHANNEL_ID = None  # مثال: -1001234567890 أو "@channel_username"
-
-# معرف قناة المنشورات للرابط (بدون @) — لزر «منشورات اللاعبين»
-PLAYER_POSTS_CHANNEL_USERNAME = None  # مثال: "MyUnoPosts"
-
+# قناة واحدة للنشر: النتائج + منشورات اللاعبين كلها تنشر هنا
+PUBLISH_CHANNEL_ID = -1003308032178   # مثال: -1001234567890 أو "@channel_username"
+# معرف القناة للرابط (بدون @) — لزر «القناة» أو «منشورات اللاعبين»
+PUBLISH_CHANNEL_USERNAME = uno1011   # مثال: "MyUnoChannel"
 # معرف البوت لرابط «إضافة اللاعب» (بدون @)
-BOT_USERNAME = None  # مثال: "MyUnoBot"
+BOT_USERNAME = UNO101bot   # مثال: "MyUnoBot"
