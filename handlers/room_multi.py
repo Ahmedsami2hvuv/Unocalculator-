@@ -378,7 +378,7 @@ async def refresh_ui_multi(room_id, bot, alert_msg_dict=None):
                         scores_text += f"{rp_marker} {rp_name}: {rp_score} نقطة\n"
                     summary = f"🏆 انتهت اللعبة!\n\n🥇 الفائز: {p_name}\n💰 النقاط: {new_total_score}\n\n{scores_text}\n📊 نقاط الجولة الأخيرة:\n{breakdown_text}\n\n🎯 سقف اللعب: {score_limit} نقطة"
                     from handlers.common import create_replay_session, build_game_end_keyboard
-                    replay_id = create_replay_session(players, room, 'multi', summary)
+                    replay_id = create_replay_session(players, room, 'multi', summary, winner_id=p_check['user_id'])
                     for target_p in players:
                         end_kb = build_game_end_keyboard(replay_id, target_p['user_id'])
                         await bot.send_message(target_p['user_id'], summary, reply_markup=end_kb)
@@ -387,7 +387,7 @@ async def refresh_ui_multi(room_id, bot, alert_msg_dict=None):
                 elif score_limit == 0:
                     summary = f"🏆 {p_name} فاز بالجولة! (+{round_points} نقطة)\n\n📊 النقاط المأخوذة:\n{breakdown_text}\n\n🎯 الوضع: جولة واحدة"
                     from handlers.common import create_replay_session, build_game_end_keyboard
-                    replay_id = create_replay_session(players, room, 'multi', summary)
+                    replay_id = create_replay_session(players, room, 'multi', summary, winner_id=p_check['user_id'])
                     for target_p in players:
                         end_kb = build_game_end_keyboard(replay_id, target_p['user_id'])
                         await bot.send_message(target_p['user_id'], summary, reply_markup=end_kb)
@@ -864,7 +864,8 @@ async def confirm_leave_multi(c: types.CallbackQuery):
     else:
         all_players_before = players + [{'user_id': c.from_user.id, 'player_name': leave_name}]
         from handlers.common import create_replay_session, build_game_end_keyboard
-        replay_id = create_replay_session(all_players_before, room, 'multi', "انتهت اللعبة")
+        winner_id = remaining_players[0]['user_id'] if remaining_players else None
+        replay_id = create_replay_session(all_players_before, room, 'multi', "انتهت اللعبة", winner_id=winner_id)
         end_kb_me = build_game_end_keyboard(replay_id, c.from_user.id)
         await c.bot.send_message(c.from_user.id, f"🚪 انسحبت من اللعبة.", reply_markup=end_kb_me)
         if remaining_players:
