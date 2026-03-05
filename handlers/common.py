@@ -644,6 +644,17 @@ async def cmd_start_with_deeplink(message: types.Message, state: FSMContext):
     except Exception:
         pass
     user = db_query("SELECT * FROM users WHERE user_id = %s", (uid,))
+    # مستخدم جديد: إنشاء سجل له حتى لا يخرج show_main_menu دون رد
+    if not user:
+        try:
+            db_query(
+                "INSERT INTO users (user_id, username, is_registered) VALUES (%s, %s, FALSE) ON CONFLICT (user_id) DO NOTHING",
+                (uid, message.from_user.username or ""),
+                commit=True,
+            )
+        except Exception:
+            pass
+        user = db_query("SELECT * FROM users WHERE user_id = %s", (uid,))
     # إذا كان مسجّل الخروج، نعرض تسجيل/دخول ولا نفتح القائمة الرئيسية
     if user and user[0].get("logged_out") in (True, 1, "t", "true"):
         lang = get_lang(uid)
@@ -1757,6 +1768,12 @@ async def show_main_menu(message, name, user_id, cleanup=False, state=None, from
     # 2. جلب بيانات المستخدم
     user_rows = db_query("SELECT * FROM users WHERE user_id = %s", (user_id,))
     if not user_rows:
+        # لا سجل في DB: نرد بأقل شيء حتى لا يبقى المستخدم بلا رد
+        target_msg = message.message if isinstance(message, types.CallbackQuery) else message
+        try:
+            await target_msg.answer("مرحباً! أرسل /start مرة أخرى للتسجيل.")
+        except Exception:
+            pass
         return
     uid = user_id
     # 2.5 إذا كان مسجّل الخروج، نعرض له شاشة الدخول/التسجيل
