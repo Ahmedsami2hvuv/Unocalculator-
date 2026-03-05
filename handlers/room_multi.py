@@ -555,14 +555,14 @@ async def handle_play_multi(c: types.CallbackQuery, state: FSMContext):
 
         if not check_validity(card, room['top_card'], room['current_color']):
             deck = safe_load(room['deck'])
-            penalty = [deck.pop(0) for _ in range(2) if deck]
+            penalty = [deck.pop(0) for _ in range(1) if deck]
             hand.extend(penalty)
             db_query("UPDATE room_players SET hand = %s WHERE user_id = %s", (json.dumps(hand), c.from_user.id), commit=True)
             db_query("UPDATE rooms SET deck = %s WHERE room_id = %s", (json.dumps(deck), room_id), commit=True)
-            alerts = {c.from_user.id: f"⛔ لعبت ورقة خطأ ({card}) وتعاقبت بسحب ورقتين!"}
+            alerts = {c.from_user.id: f"⛔ لعبت ورقة خطأ ({card}) وتعاقبت بسحب ورقة!"}
             for op in players:
                 if op['user_id'] != c.from_user.id:
-                    alerts[op['user_id']] = f"⚠️ {p_name} لعب ورقة خطأ وتعاقب بسحب ورقتين!"
+                    alerts[op['user_id']] = f"⚠️ {p_name} لعب ورقة خطأ وتعاقب بسحب ورقة!"
             return await refresh_ui_multi(room_id, c.bot, alerts)
 
         hand.pop(idx)
