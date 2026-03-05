@@ -106,10 +106,10 @@ async def channel_subscribe_message_middleware(handler, event: types.Message, da
             pass
     text = (event.text or "").strip()
     # روابط من منشورات القناة: نسمح بالمرور دون اشتراك (بروفايل، لايك، العب معي، add)
-    if text.startswith("/start") and len(text) > 7:
-        payload = (text.split(maxsplit=1)[1] if " " in text else "").strip()
-        if payload.startswith("profile_") or payload.startswith("add_") or payload.startswith("like_") or payload.startswith("join_"):
-            return await handler(event, data)
+    if text.startswith("/start") and (
+        "profile_" in text or "add_" in text or "like_" in text or "join_" in text
+    ):
+        return await handler(event, data)
     # إذا الرسالة /start مع رابط انضمام لغرفة: نحفظ الكود قبل عرض اشتراك القناة حتى لا يضيع
     if text.startswith("/start") and "join_" in text:
         parts = text.split(maxsplit=1)
@@ -929,10 +929,11 @@ def _normalize_join_code(payload: str) -> str:
 async def cmd_start_with_deeplink(message: types.Message, state: FSMContext):
     """معالجة /start مع رابط الدعوة: join_، profile_، add_"""
     text = (message.text or "").strip()
-    parts = text.split(maxsplit=1)
+    # استخراج الـ payload: كل ما بعد "/start" (مع أو بدون مسافة) ليعمل الرابط من القناة
+    payload = unquote(text[6:].strip()) if text.startswith("/start") and len(text) > 6 else ""
+    parts = ["/start", payload] if payload else [text]
     # روابط من القناة: حساب اللاعب (بروفايل)، أو لايك، أو العب معي
-    if len(parts) >= 2:
-        payload = unquote(parts[1].strip())
+    if len(parts) >= 2 and payload:
         if payload.startswith("like_"):
             try:
                 post_id = int(payload.replace("like_", ""))
