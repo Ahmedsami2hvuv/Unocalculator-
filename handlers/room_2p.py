@@ -62,26 +62,6 @@ def generate_h2o_deck():
     random.shuffle(deck)
     return deck
 
-def make_end_kb(players, room, mode='2p', for_user_id=None):
-    from handlers.common import replay_data
-    replay_id = str(uuid.uuid4())[:8]
-    replay_data[replay_id] = {
-        'players': [(p['user_id'], p.get('player_name') or 'لاعب') for p in players],
-        'max_players': room.get('max_players', 2),
-        'score_limit': room.get('score_limit', 0),
-        'mode': mode,
-        'creator_id': room.get('creator_id')
-    }
-    kb = []
-    if for_user_id:
-        for p in players:
-            if p['user_id'] != for_user_id:
-                p_name = p.get('player_name') or 'لاعب'
-                kb.append([InlineKeyboardButton(text=f"➕ إضافة {p_name}", callback_data=f"addfrnd_{p['user_id']}")])
-    kb.append([InlineKeyboardButton(text="🔄 لعب مرة أخرى", callback_data=f"replay_{replay_id}")])
-    kb.append([InlineKeyboardButton(text="🏠 القائمة الرئيسية", callback_data="home")])
-    return InlineKeyboardMarkup(inline_keyboard=kb)
-
 def sort_hand(hand):
     card_counts = Counter(card.split()[0] for card in hand if card.split()[0] in ['🔴', '🔵', '🟡', '🟢'])
     def card_sort_key(card):
@@ -1050,8 +1030,10 @@ async def handle_play(c: types.CallbackQuery, state: FSMContext):
                     (json.dumps(discard_pile), card, card.split()[0], room_id), commit=True)
             db_query("DELETE FROM room_players WHERE room_id = %s", (room_id,), commit=True)
             win_text = f"🏆 **{p_name} فاز بالجولة!** 🏆\n📊 حصل على {points} نقطة."
-            end_kb = make_end_kb(players, room, '2p')
+            from handlers.common import create_replay_session, build_game_end_keyboard
+            replay_id = create_replay_session(players, room, '2p', win_text)
             for p in players:
+                end_kb = build_game_end_keyboard(replay_id, p['user_id'])
                 await c.bot.send_message(p['user_id'], win_text, reply_markup=end_kb)
             db_query("DELETE FROM rooms WHERE room_id = %s", (room_id,), commit=True)
             return
@@ -1347,9 +1329,12 @@ async def confirm_exit(c: types.CallbackQuery):
     room = room_data[0] if room_data else {'max_players': 2, 'score_limit': 0}
     me = next((x for x in players if x['user_id'] == c.from_user.id), None)
     leave_name = me.get('player_name') if me else "لاعب"
+    from handlers.common import create_replay_session, build_game_end_keyboard
+    exit_summary = f"🚪 {leave_name} انسحب، تم إلغاء اللعبة."
+    replay_id = create_replay_session(players, room, '2p', exit_summary)
     for p in players:
-        end_kb = make_end_kb(players, room, '2p', for_user_id=p['user_id'])
-        await c.bot.send_message(p['user_id'], f"🚪 {leave_name} انسحب، تم إلغاء اللعبة.", reply_markup=end_kb)
+        end_kb = build_game_end_keyboard(replay_id, p['user_id'])
+        await c.bot.send_message(p['user_id'], exit_summary, reply_markup=end_kb)
     db_query("DELETE FROM rooms WHERE room_id = %s", (rid,), commit=True)
 
 @router.callback_query(F.data.startswith("cn_ex_"))
