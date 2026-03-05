@@ -54,6 +54,13 @@ if _cc:
     if getattr(_cc, "BOT_USERNAME", None):
         BOT_USERNAME = _cc.BOT_USERNAME
 
+# قيم افتراضية إذا لم تُحمَّل من الملف أو البيئة (تطابق channel_config.py)
+if PUBLISH_CHANNEL_ID is None and not PUBLISH_CHANNEL_USERNAME:
+    PUBLISH_CHANNEL_ID = -1003308032178
+    PUBLISH_CHANNEL_USERNAME = "uno1011"
+    BOT_USERNAME = BOT_USERNAME or "UNO101bot"
+    logger.info("Using default publish channel: id=%s username=%s", PUBLISH_CHANNEL_ID, PUBLISH_CHANNEL_USERNAME)
+
 # سجل عند التشغيل لمعرفة إن كانت القناة مضبوطة (للتشخيص)
 if PUBLISH_CHANNEL_ID is not None or PUBLISH_CHANNEL_USERNAME:
     logger.info("Publish channel configured: id=%s username=%s", PUBLISH_CHANNEL_ID, PUBLISH_CHANNEL_USERNAME)
@@ -88,6 +95,15 @@ async def channel_subscribe_message_middleware(handler, event: types.Message, da
     user_id = event.from_user.id if event.from_user else None
     if not user_id:
         return await handler(event, data)
+    # من في وضع «انتظار محتوى المنشور» نسمح بمرور رسالته حتى يصل لمعالج النشر
+    state = data.get("state")
+    if state:
+        try:
+            s = await state.get_state()
+            if s and "waiting_message" in (s or ""):
+                return await handler(event, data)
+        except Exception:
+            pass
     text = (event.text or "").strip()
     # روابط من منشورات القناة: نسمح بالمرور دون اشتراك (بروفايل، لايك، add)
     if text.startswith("/start") and len(text) > 7:
@@ -3570,7 +3586,9 @@ def _get_player_name_for_post(user_id: int, full_name: str = None) -> str:
 
 
 def _normalize_channel_target():
-    """يرجع chat_id أو @username للقناة (معرف سالب أو يوزر)."""
+    """يرجع @username للقناة إن وُجد (أفضل مع تيليجرام)، وإلا معرف القناة الرقمي."""
+    if PUBLISH_CHANNEL_USERNAME:
+        return f"@{PUBLISH_CHANNEL_USERNAME.lstrip('@')}"
     raw = PUBLISH_CHANNEL_ID
     if raw is not None:
         try:
@@ -3580,8 +3598,6 @@ def _normalize_channel_target():
             return ch
         except (TypeError, ValueError):
             pass
-    if PUBLISH_CHANNEL_USERNAME:
-        return f"@{PUBLISH_CHANNEL_USERNAME.lstrip('@')}"
     return None
 
 
@@ -3669,6 +3685,7 @@ def _channel_post_buttons(publisher_uid: int, add_profile: bool, join_code: str 
 @router.message(PlayerPostStates.waiting_message, F.text)
 async def player_post_receive_text(message: types.Message, state: FSMContext):
     """استقبال منشور نصي والتحقق ثم النشر في قناة النشر."""
+    logger.info("player_post_receive_text: got text from user %s, state=%s", message.from_user.id, await state.get_state())
     uid = message.from_user.id
     data = await state.get_data()
     add_profile = data.get("post_add_profile", True)
