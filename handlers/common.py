@@ -3425,7 +3425,15 @@ async def player_post_receive_text(message: types.Message, state: FSMContext):
             text=text_to_send,
             parse_mode="Markdown"
         )
-        await message.answer("✅ تم نشر منشورك في القناة.")
+        kb_after = []
+        if PUBLISH_CHANNEL_USERNAME:
+            ch_user = PUBLISH_CHANNEL_USERNAME.lstrip("@")
+            kb_after.append([InlineKeyboardButton(text="📢 الذهاب للقناة", url=f"https://t.me/{ch_user}")])
+        kb_after.append([InlineKeyboardButton(text="🔙 رجوع للقائمة الرئيسية", callback_data="home")])
+        await message.answer(
+            "✅ تم نشر منشورك في القناة.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_after)
+        )
     except Exception as e:
         print(f"[player_post] {e}")
         await message.answer(
@@ -3447,7 +3455,15 @@ async def player_post_receive_media(message: types.Message, state: FSMContext):
             return await message.answer(f"⛔ {reason}")
     name = _get_player_name_for_post(message.from_user.id, message.from_user.full_name)
     if await _publish_media_to_channel(message.bot, message, name):
-        await message.answer("✅ تم نشر منشورك في القناة.")
+        kb_after = []
+        if PUBLISH_CHANNEL_USERNAME:
+            ch_user = PUBLISH_CHANNEL_USERNAME.lstrip("@")
+            kb_after.append([InlineKeyboardButton(text="📢 الذهاب للقناة", url=f"https://t.me/{ch_user}")])
+        kb_after.append([InlineKeyboardButton(text="🔙 رجوع للقائمة الرئيسية", callback_data="home")])
+        await message.answer(
+            "✅ تم نشر منشورك في القناة.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_after)
+        )
     else:
         await message.answer(
             "❌ فشل النشر.\n\n"
