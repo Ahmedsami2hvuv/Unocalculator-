@@ -665,21 +665,86 @@ async def cmd_start_with_deeplink(message: types.Message, state: FSMContext):
     """معالجة /start مع رابط الدعوة: join_، profile_، add_"""
     text = (message.text or "").strip()
     parts = text.split(maxsplit=1)
-    # روابط من القناة: حساب اللاعب (بروفايل + متابعة، طلب لعب، رجوع للقناة، الرئيسية)
-    if len(parts) >= 2 and (parts[1].startswith("profile_") or parts[1].startswith("add_")):
-        try:
-            target_id = int(parts[1].split("_", 1)[1].strip())
-        except (IndexError, ValueError):
+    # روابط من القناة: حساب اللاعب (بروفايل)، أو لايك
+    if len(parts) >= 2:
+        payload = parts[1].strip()
+        if payload.startswith("like_"):
+            try:
+                post_id = int(payload.replace("like_", ""))
+            except ValueError:
+                post_id = None
+            if post_id:
+                row = db_query("SELECT publisher_uid, channel_id, message_id, likes_count FROM channel_posts WHERE id = %s", (post_id,))
+                if row:
+                    db_query(
+                        "UPDATE channel_posts SET likes_count = COALESCE(likes_count, 0) + 1 WHERE id = %s",
+                        (post_id,), commit=True
+                    )
+                    publisher_uid = row[0]["publisher_uid"]
+                    ch_id = row[0]["channel_id"]
+                    msg_id = row[0]["message_id"]
+                    new_count = (row[0].get("likes_count") or 0) + 1
+                    try:
+                        await message.bot.send_message(
+                            publisher_uid,
+                            f"❤️ منشورك حصل على لايك! العدد الحالي: {new_count}"
+                        )
+                    except Exception:
+                        pass
+                    try:
+                        r2 = db_query(
+                            "SELECT publisher_uid, add_profile, join_code FROM channel_posts WHERE id = %s",
+                            (post_id,)
+                        )
+                        if r2:
+                            uid_pub = r2[0]["publisher_uid"]
+                            add_p = r2[0].get("add_profile", True)
+                            jc = r2[0].get("join_code")
+                            new_kb = _channel_post_buttons(uid_pub, add_p, jc, post_id=post_id, likes_count=new_count)
+                            if new_kb:
+                                await message.bot.edit_message_reply_markup(chat_id=ch_id, message_id=msg_id, reply_markup=new_kb)
+                    except Exception:
+                        pass
+                    await message.answer(f"❤️ تم! عدد لايكات المنشور: {new_count}")
+                    return
+            await message.answer("✅ شكراً!")
+            return
+        if payload.startswith("profile_") or payload.startswith("add_"):
+            rest = payload.split("_", 1)[1]
+            post_id = None
             target_id = None
-        if target_id:
-            target = db_query("SELECT * FROM users WHERE user_id = %s", (target_id,))
-            if target:
-                uid = message.from_user.id
-                t_user = target[0]
-                profile_text = _build_profile_text(uid, t_user, target_id)
-                kb = _build_profile_kb(uid, target_id, from_channel=True)
-                await message.answer(profile_text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
-                return
+            if "_" in rest:
+                parts_rest = rest.rsplit("_", 1)
+                try:
+                    target_id = int(parts_rest[0])
+                    post_id = int(parts_rest[1])
+                except (ValueError, IndexError):
+                    try:
+                        target_id = int(rest)
+                    except ValueError:
+                        pass
+            else:
+                try:
+                    target_id = int(rest)
+                except ValueError:
+                    pass
+            if target_id:
+                if post_id:
+                    try:
+                        db_query(
+                            "UPDATE channel_posts SET profile_clicks_count = COALESCE(profile_clicks_count, 0) + 1 WHERE id = %s",
+                            (post_id,), commit=True
+                        )
+                    except Exception:
+                        pass
+                target = db_query("SELECT * FROM users WHERE user_id = %s", (target_id,))
+                if target:
+                    uid = message.from_user.id
+                    t_user = target[0]
+                    profile_text = _build_profile_text(uid, t_user, target_id)
+                    kb = _build_profile_kb(uid, target_id, from_channel=True)
+                    await message.answer(profile_text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+                    return
     if len(parts) >= 2 and parts[1].startswith("join_"):
         code = _normalize_join_code(parts[1])
         if code:
@@ -1879,15 +1944,10 @@ async def show_main_menu(message, name, user_id, cleanup=False, state=None, from
             pass
         return
     # 4. بناء الكيبورد
-    posts_row = [InlineKeyboardButton(text="📢 نشر منشور", callback_data="player_post_start")]
-    if PUBLISH_CHANNEL_USERNAME:
-        posts_row.append(InlineKeyboardButton(text="📜 القناة", url=f"https://t.me/{PUBLISH_CHANNEL_USERNAME.lstrip('@')}"))
-    else:
-        posts_row.append(InlineKeyboardButton(text="📜 القناة", callback_data="player_posts_channel"))
     kb = [
         [InlineKeyboardButton(text=t(uid, "btn_random_play"), callback_data="random_play")],
         [InlineKeyboardButton(text=t(uid, "btn_play_friends"), callback_data="play_friends")],
-        posts_row,
+        [InlineKeyboardButton(text="👥 مجتمع الأونو", callback_data="community_uno_menu")],
         [InlineKeyboardButton(text=t(uid, "btn_friends"), callback_data="social_menu")],
         [InlineKeyboardButton(text=t(uid, "btn_my_account"), callback_data="my_account"),
          InlineKeyboardButton(text=t(uid, "btn_calc"), callback_data="mode_calc")],
@@ -3393,6 +3453,68 @@ async def post_ready_send(c: types.CallbackQuery, state: FSMContext):
     await c.answer()
 
 
+@router.callback_query(F.data == "community_uno_menu")
+async def community_uno_menu(c: types.CallbackQuery):
+    """قائمة مجتمع الأونو: نشر منشور، عرض القناة، منشوراتي."""
+    uid = c.from_user.id
+    rows = [
+        [InlineKeyboardButton(text="📢 نشر منشور بالقناة", callback_data="player_post_start")],
+    ]
+    if PUBLISH_CHANNEL_USERNAME:
+        ch = PUBLISH_CHANNEL_USERNAME.lstrip("@")
+        rows.append([InlineKeyboardButton(text="📜 عرض القناة", url=f"https://t.me/{ch}")])
+    else:
+        rows.append([InlineKeyboardButton(text="📜 عرض القناة", callback_data="player_posts_channel")])
+    rows.append([InlineKeyboardButton(text="📋 منشوراتي", callback_data="my_posts_list")])
+    rows.append([InlineKeyboardButton(text="🔙 رجوع", callback_data="home")])
+    await c.message.edit_text(
+        "👥 **مجتمع الأونو**\n\nاختر:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+        parse_mode="Markdown"
+    )
+    await c.answer()
+
+
+@router.callback_query(F.data == "my_posts_list")
+async def my_posts_list(c: types.CallbackQuery):
+    """عرض منشورات اللاعب مع إحصائيات: لايكات، نقرات حساب."""
+    uid = c.from_user.id
+    try:
+        posts = db_query(
+            "SELECT id, message_id, created_at, likes_count, profile_clicks_count FROM channel_posts WHERE publisher_uid = %s ORDER BY created_at DESC LIMIT 30",
+            (uid,)
+        )
+    except Exception:
+        posts = []
+    if not posts:
+        await c.message.edit_text(
+            "📋 **منشوراتي**\n\nلا توجد منشورات بعد. انشر منشوراً من مجتمع الأونو.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="📢 نشر منشور", callback_data="player_post_start")],
+                [InlineKeyboardButton(text="🔙 رجوع", callback_data="community_uno_menu")]
+            ]),
+            parse_mode="Markdown"
+        )
+        await c.answer()
+        return
+    lines = ["📋 **منشوراتي**\n"]
+    for i, p in enumerate(posts, 1):
+        created = p.get("created_at")
+        when = created.strftime("%Y-%m-%d %H:%M") if hasattr(created, "strftime") else str(created)
+        likes = p.get("likes_count") or 0
+        clicks = p.get("profile_clicks_count") or 0
+        lines.append(f"{i}. 📅 {when}\n   ❤️ لايك: {likes}  |  👤 نقرات الحساب: {clicks}")
+    text = "\n".join(lines)
+    await c.message.edit_text(
+        text + "\n\n_الإحصائيات تُحدَّث عند كل لايك أو نقر على زر حساب اللاعب._",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔙 رجوع", callback_data="community_uno_menu")]
+        ]),
+        parse_mode="Markdown"
+    )
+    await c.answer()
+
+
 @router.callback_query(F.data == "player_posts_channel")
 async def player_posts_channel_link(c: types.CallbackQuery):
     """عرض رابط القناة إذا لم يكن الزر برابط."""
@@ -3429,11 +3551,11 @@ def _normalize_channel_target():
     return None
 
 
-async def _publish_media_to_channel(bot, message: types.Message, name: str, channel_id=None, reply_markup=None) -> bool:
-    """ينشر محتوى الرسالة (نص/صورة/صوت/...) في قناة النشر. يُرجع True عند النجاح."""
+async def _publish_media_to_channel(bot, message: types.Message, name: str, channel_id=None, reply_markup=None):
+    """ينشر محتوى الرسالة في قناة النشر. يُرجع (True, sent_message_id) عند النجاح أو (False, None)."""
     ch = channel_id if channel_id is not None else _normalize_channel_target()
     if not ch:
-        return False
+        return False, None
     cap = f"👤 **{name}**\n\n{(message.caption or '').strip()}" if (message.caption or "").strip() else f"👤 **{name}**"
     if cap.endswith("\n\n"):
         cap = cap.rstrip()
@@ -3442,38 +3564,38 @@ async def _publish_media_to_channel(bot, message: types.Message, name: str, chan
         kwargs["reply_markup"] = reply_markup
     try:
         if message.text:
-            await bot.send_message(ch, f"👤 **{name}**\n\n{message.text}", **kwargs)
-            return True
+            sent = await bot.send_message(ch, f"👤 **{name}**\n\n{message.text}", **kwargs)
+            return True, sent.message_id
         if message.photo:
-            await bot.send_photo(ch, message.photo[-1].file_id, caption=cap, **kwargs)
-            return True
+            sent = await bot.send_photo(ch, message.photo[-1].file_id, caption=cap, **kwargs)
+            return True, sent.message_id
         if message.voice:
-            await bot.send_voice(ch, message.voice.file_id, caption=cap, **kwargs)
-            return True
+            sent = await bot.send_voice(ch, message.voice.file_id, caption=cap, **kwargs)
+            return True, sent.message_id
         if message.video:
-            await bot.send_video(ch, message.video.file_id, caption=cap, **kwargs)
-            return True
+            sent = await bot.send_video(ch, message.video.file_id, caption=cap, **kwargs)
+            return True, sent.message_id
         if message.animation:
-            await bot.send_animation(ch, message.animation.file_id, caption=cap, **kwargs)
-            return True
+            sent = await bot.send_animation(ch, message.animation.file_id, caption=cap, **kwargs)
+            return True, sent.message_id
         if message.sticker:
             await bot.send_sticker(ch, message.sticker.file_id)
-            await bot.send_message(ch, f"👤 **{name}**", **kwargs)
-            return True
+            sent = await bot.send_message(ch, f"👤 **{name}**", **kwargs)
+            return True, sent.message_id
         if message.document:
-            await bot.send_document(ch, message.document.file_id, caption=cap, **kwargs)
-            return True
+            sent = await bot.send_document(ch, message.document.file_id, caption=cap, **kwargs)
+            return True, sent.message_id
         if message.audio:
-            await bot.send_audio(ch, message.audio.file_id, caption=cap, **kwargs)
-            return True
+            sent = await bot.send_audio(ch, message.audio.file_id, caption=cap, **kwargs)
+            return True, sent.message_id
         if message.video_note:
             await bot.send_video_note(ch, message.video_note.file_id)
-            await bot.send_message(ch, f"👤 **{name}**", **kwargs)
-            return True
+            sent = await bot.send_message(ch, f"👤 **{name}**", **kwargs)
+            return True, sent.message_id
     except Exception as e:
         print(f"[player_post] {e}")
-        return False
-    return False
+        return False, None
+    return False, None
 
 
 def _create_deferred_2p_room(creator_uid: int, creator_name: str) -> str:
@@ -3490,16 +3612,21 @@ def _create_deferred_2p_room(creator_uid: int, creator_name: str) -> str:
     return code
 
 
-def _channel_post_buttons(publisher_uid: int, add_profile: bool, join_code: str = None) -> InlineKeyboardMarkup:
-    """أزرار تحت منشور القناة: حساب اللاعب، العب معي (إن وُجد)."""
+def _channel_post_buttons(publisher_uid: int, add_profile: bool, join_code: str = None, post_id: int = None, likes_count: int = 0) -> InlineKeyboardMarkup:
+    """أزرار تحت منشور القناة: حساب اللاعب، العب معي، لايك."""
     bot_user = (BOT_USERNAME or "").strip().lstrip("@")
     if not bot_user:
         return None
     rows = []
     if add_profile:
-        rows.append([InlineKeyboardButton(text="👤 حساب اللاعب", url=f"https://t.me/{bot_user}?start=profile_{publisher_uid}")])
+        url = f"https://t.me/{bot_user}?start=profile_{publisher_uid}"
+        if post_id:
+            url = f"https://t.me/{bot_user}?start=profile_{publisher_uid}_{post_id}"
+        rows.append([InlineKeyboardButton(text="👤 حساب اللاعب", url=url)])
     if join_code:
         rows.append([InlineKeyboardButton(text="🎮 العب معي", url=f"https://t.me/{bot_user}?start=join_{join_code}")])
+    if post_id is not None:
+        rows.append([InlineKeyboardButton(text=f"❤️ لايك ({likes_count})", url=f"https://t.me/{bot_user}?start=like_{post_id}")])
     if not rows:
         return None
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -3526,30 +3653,61 @@ async def player_post_receive_text(message: types.Message, state: FSMContext):
         return await message.answer("⚠️ نشر المنشورات غير متاح حالياً.")
     join_code = None
     if add_play:
-        join_code = _create_deferred_2p_room(uid, name)
+        try:
+            join_code = _create_deferred_2p_room(uid, name)
+        except Exception as e:
+            print(f"[player_post] create_room: {e}")
     reply_kb = _channel_post_buttons(uid, add_profile, join_code)
+    sent_msg_id = None
     try:
-        await message.bot.send_message(
+        sent = await message.bot.send_message(
             chat_id=chat_target,
             text=text_to_send,
             parse_mode="Markdown",
             reply_markup=reply_kb
         )
-        kb_after = []
-        if PUBLISH_CHANNEL_USERNAME:
-            ch_user = PUBLISH_CHANNEL_USERNAME.lstrip("@")
-            kb_after.append([InlineKeyboardButton(text="📢 الذهاب للقناة", url=f"https://t.me/{ch_user}")])
-        kb_after.append([InlineKeyboardButton(text="🔙 رجوع للقائمة الرئيسية", callback_data="home")])
-        await message.answer(
-            "✅ تم نشر منشورك في القناة.",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_after)
-        )
+        sent_msg_id = sent.message_id
     except Exception as e:
-        print(f"[player_post] {e}")
-        await message.answer(
-            "❌ فشل النشر.\n\n"
-            "تأكد أن البوت مضاف في القناة كـ **مسؤول** وله صلاحية «نشر رسائل» (Post messages)."
-        )
+        print(f"[player_post] with buttons: {e}")
+        try:
+            sent = await message.bot.send_message(
+                chat_id=chat_target,
+                text=text_to_send,
+                parse_mode="Markdown"
+            )
+            sent_msg_id = sent.message_id
+        except Exception as e2:
+            print(f"[player_post] without buttons: {e2}")
+            await message.answer(
+                "❌ فشل النشر.\n\nتأكد أن البوت مضاف في القناة كـ **مسؤول** وله صلاحية «نشر رسائل»."
+            )
+            return
+    post_id = None
+    if sent_msg_id is not None:
+        try:
+            row = db_query(
+                "INSERT INTO channel_posts (channel_id, message_id, publisher_uid, add_profile, join_code) VALUES (%s, %s, %s, %s, %s) RETURNING id",
+                (str(chat_target), sent_msg_id, uid, bool(add_profile), join_code),
+                commit=True
+            )
+            if row:
+                post_id = row[0].get("id")
+                new_kb = _channel_post_buttons(uid, add_profile, join_code, post_id=post_id, likes_count=0)
+                if new_kb:
+                    await message.bot.edit_message_reply_markup(
+                        chat_id=chat_target, message_id=sent_msg_id, reply_markup=new_kb
+                    )
+        except Exception as e:
+            print(f"[player_post] save_post: {e}")
+    kb_after = []
+    if PUBLISH_CHANNEL_USERNAME:
+        ch_user = PUBLISH_CHANNEL_USERNAME.lstrip("@")
+        kb_after.append([InlineKeyboardButton(text="📢 الذهاب للقناة", url=f"https://t.me/{ch_user}")])
+    kb_after.append([InlineKeyboardButton(text="🔙 رجوع للقائمة الرئيسية", callback_data="home")])
+    await message.answer(
+        "✅ تم نشر منشورك في القناة.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_after)
+    )
 
 
 @router.message(PlayerPostStates.waiting_message, F.photo | F.voice | F.video | F.animation | F.sticker | F.document | F.audio | F.video_note)
@@ -3568,9 +3726,34 @@ async def player_post_receive_media(message: types.Message, state: FSMContext):
         if not ok:
             return await message.answer(f"⛔ {reason}")
     name = _get_player_name_for_post(uid, message.from_user.full_name)
-    join_code = _create_deferred_2p_room(uid, name) if add_play else None
+    join_code = None
+    if add_play:
+        try:
+            join_code = _create_deferred_2p_room(uid, name)
+        except Exception:
+            pass
     reply_kb = _channel_post_buttons(uid, add_profile, join_code)
-    if await _publish_media_to_channel(message.bot, message, name, reply_markup=reply_kb):
+    ok, sent_msg_id = await _publish_media_to_channel(message.bot, message, name, reply_markup=reply_kb)
+    if not ok and reply_kb:
+        ok, sent_msg_id = await _publish_media_to_channel(message.bot, message, name, reply_markup=None)
+    if ok and sent_msg_id is not None:
+        chat_target = _normalize_channel_target()
+        try:
+            row = db_query(
+                "INSERT INTO channel_posts (channel_id, message_id, publisher_uid, add_profile, join_code) VALUES (%s, %s, %s, %s, %s) RETURNING id",
+                (str(chat_target), sent_msg_id, uid, bool(add_profile), join_code),
+                commit=True
+            )
+            if row:
+                post_id = row[0].get("id")
+                new_kb = _channel_post_buttons(uid, add_profile, join_code, post_id=post_id, likes_count=0)
+                if new_kb:
+                    await message.bot.edit_message_reply_markup(
+                        chat_id=chat_target, message_id=sent_msg_id, reply_markup=new_kb
+                    )
+        except Exception as e:
+            print(f"[player_post] save_post media: {e}")
+    if ok:
         kb_after = []
         if PUBLISH_CHANNEL_USERNAME:
             ch_user = PUBLISH_CHANNEL_USERNAME.lstrip("@")
@@ -3582,8 +3765,7 @@ async def player_post_receive_media(message: types.Message, state: FSMContext):
         )
     else:
         await message.answer(
-            "❌ فشل النشر.\n\n"
-            "تأكد أن البوت مضاف في القناة كـ **مسؤول** وله صلاحية «نشر رسائل» (Post messages)."
+            "❌ فشل النشر.\n\nتأكد أن البوت مضاف في القناة كـ **مسؤول** وله صلاحية «نشر رسائل»."
         )
 
 
