@@ -432,6 +432,7 @@ class RoomStates(StatesGroup):
 
 
 class PlayerPostStates(StatesGroup):
+    waiting_options = State()
     waiting_message = State()
 
 
@@ -661,9 +662,24 @@ def _normalize_join_code(payload: str) -> str:
 
 @router.message(Command("start"))
 async def cmd_start_with_deeplink(message: types.Message, state: FSMContext):
-    """معالجة /start مع رابط الدعوة: /start join_ROOMCODE"""
+    """معالجة /start مع رابط الدعوة: join_، profile_، add_"""
     text = (message.text or "").strip()
     parts = text.split(maxsplit=1)
+    # روابط من القناة: حساب اللاعب (بروفايل + متابعة، طلب لعب، رجوع للقناة، الرئيسية)
+    if len(parts) >= 2 and (parts[1].startswith("profile_") or parts[1].startswith("add_")):
+        try:
+            target_id = int(parts[1].split("_", 1)[1].strip())
+        except (IndexError, ValueError):
+            target_id = None
+        if target_id:
+            target = db_query("SELECT * FROM users WHERE user_id = %s", (target_id,))
+            if target:
+                uid = message.from_user.id
+                t_user = target[0]
+                profile_text = _build_profile_text(uid, t_user, target_id)
+                kb = _build_profile_kb(uid, target_id, from_channel=True)
+                await message.answer(profile_text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+                return
     if len(parts) >= 2 and parts[1].startswith("join_"):
         code = _normalize_join_code(parts[1])
         if code:
@@ -1743,24 +1759,8 @@ async def view_profile_handler(c: types.CallbackQuery):
         await c.answer("⚠️ فشل فتح بروفايل اللاعب.", show_alert=True)
 
 
-async def process_user_search_by_id(c: types.CallbackQuery, target_id: int, back_to_replay_id: str = None):
-    """عرض بروفايل اللاعب. إذا back_to_replay_id معطى (من شاشة نهاية اللعبة) يُضاف زر رجوع لشاشة اللعبة."""
-    uid = c.from_user.id
-
-    # جلب اللاعب المطلوب
-    target = db_query("SELECT * FROM users WHERE user_id = %s", (target_id,))
-    if not target:
-        return await c.answer("❌ اللاعب غير موجود.", show_alert=True)
-
-    t_user = target[0]
-
-    # هل أنت متابعه؟
-    is_following = db_query(
-    "SELECT 1 FROM follows WHERE follower_id = %s AND following_id = %s",
-    (uid, target_id)
-    )
-
-    # حالة الأونلاين
+def _build_profile_text(uid: int, t_user: dict, target_id: int) -> str:
+    """نص بروفايل اللاعب (مع الإنجازات)."""
     from datetime import datetime, timedelta
     last_seen = t_user.get("last_seen")
     if last_seen:
@@ -1768,33 +1768,57 @@ async def process_user_search_by_id(c: types.CallbackQuery, target_id: int, back
         status = t(uid, "status_online") if online else t(uid, "status_offline", time=last_seen.strftime("%H:%M"))
     else:
         status = t(uid, "status_offline", time="--:--")
-
-    # نص البروفايل + إنجازات
-    text = t(
-        uid,
-        "profile_title",
+    text = t(uid, "profile_title",
         name=t_user.get("player_name", "لاعب"),
         username=t_user.get("username_key", "---"),
         points=t_user.get("online_points", 0),
-        status=status
-    )
+        status=status)
     badges = get_user_achievements(target_id)
     if badges:
         text += format_achievements_badges(uid, badges)
+    return text
 
+
+def _build_profile_kb(uid: int, target_id: int, back_to_replay_id: str = None, from_channel: bool = False):
+    """يبني كيبورد بروفايل اللاعب. من القناة: متابعة، طلب لعب، رجوع للقناة، الرئيسية."""
+    is_following = db_query(
+        "SELECT 1 FROM follows WHERE follower_id = %s AND following_id = %s",
+        (uid, target_id)
+    )
     follow_btn_text = t(uid, "btn_unfollow") if is_following else t(uid, "btn_follow")
-    follow_callback = f"unfollow_{target_id}" if is_following else f"follow_{target_id}"
-
+    if from_channel:
+        follow_callback = f"unfollow_ch_{target_id}" if is_following else f"follow_ch_{target_id}"
+        invite_callback = f"invite_ch_{target_id}"
+    else:
+        follow_callback = f"unfollow_{target_id}" if is_following else f"follow_{target_id}"
+        invite_callback = f"invite_{target_id}"
     kb = [
         [InlineKeyboardButton(text=follow_btn_text, callback_data=follow_callback)],
-        [InlineKeyboardButton(text=t(uid, "btn_invite_play"), callback_data=f"invite_{target_id}")],
+        [InlineKeyboardButton(text=t(uid, "btn_invite_play"), callback_data=invite_callback)],
     ]
-    if (uid, target_id) in invite_mutes:
+    if (uid, target_id) in invite_mutes and not from_channel:
         kb.append([InlineKeyboardButton(text="✏️ تعديل الكتم", callback_data=f"mute_inv_{target_id}")])
     if back_to_replay_id:
         kb.append([InlineKeyboardButton(text="🔙 رجوع لشاشة اللعبة", callback_data=f"gameend_back_{back_to_replay_id}")])
+    elif from_channel:
+        if PUBLISH_CHANNEL_USERNAME:
+            ch_user = PUBLISH_CHANNEL_USERNAME.lstrip("@")
+            kb.append([InlineKeyboardButton(text="📢 رجوع للقناة", url=f"https://t.me/{ch_user}")])
+        kb.append([InlineKeyboardButton(text="🔙 القائمة الرئيسية", callback_data="home")])
     else:
         kb.append([InlineKeyboardButton(text=t(uid, "btn_back"), callback_data="social_menu")])
+    return kb
+
+
+async def process_user_search_by_id(c: types.CallbackQuery, target_id: int, back_to_replay_id: str = None, from_channel: bool = False):
+    """عرض بروفايل اللاعب. من القناة: أزرار متابعة، طلب لعب، رجوع للقناة، الرئيسية."""
+    uid = c.from_user.id
+    target = db_query("SELECT * FROM users WHERE user_id = %s", (target_id,))
+    if not target:
+        return await c.answer("❌ اللاعب غير موجود.", show_alert=True)
+    t_user = target[0]
+    text = _build_profile_text(uid, t_user, target_id)
+    kb = _build_profile_kb(uid, target_id, back_to_replay_id=back_to_replay_id, from_channel=from_channel)
     await c.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
     
 
@@ -2857,33 +2881,26 @@ async def process_user_search(message: types.Message, state: FSMContext):
 @router.callback_query(F.data.startswith("follow_"))
 async def process_follow(c: types.CallbackQuery):
     uid = c.from_user.id
-    target_id = int(c.data.split("_")[1])
-    
+    from_channel = c.data.startswith("follow_ch_")
+    target_id = int(c.data.replace("follow_ch_", "").replace("follow_", ""))
     if uid == target_id:
         return await c.answer("🧐 لا يمكنك متابعة نفسك!", show_alert=True)
-
-    # إضافة المتابعة للقاعدة
     try:
         db_query("INSERT INTO follows (follower_id, following_id) VALUES (%s, %s)", (uid, target_id), commit=True)
         await c.answer("✅ تمت المتابعة بنجاح!")
     except Exception:
         await c.answer("⚠️ أنت تتابع هذا اللاعب بالفعل.")
-
-    # تحديث واجهة البروفايل فوراً (إظهار زر إلغاء المتابعة بدلاً من متابعة)
-    await process_user_search_by_id(c, target_id)
+    await process_user_search_by_id(c, target_id, from_channel=from_channel)
 
 # --- تنفيذ إلغاء المتابعة ---
 @router.callback_query(F.data.startswith("unfollow_"))
 async def process_unfollow(c: types.CallbackQuery):
     uid = c.from_user.id
-    target_id = int(c.data.split("_")[1])
-    
-    db_query("SELECT 1 FROM follows WHERE follower_id = %s AND following_id = %s", (uid, target_id))
+    from_channel = c.data.startswith("unfollow_ch_")
+    target_id = int(c.data.replace("unfollow_ch_", "").replace("unfollow_", ""))
     db_query("DELETE FROM follows WHERE follower_id = %s AND following_id = %s", (uid, target_id), commit=True)
-    
     await c.answer("❌ تم إلغاء المتابعة.")
-    # تحديث واجهة البروفايل فوراً
-    await process_user_search_by_id(c, target_id)
+    await process_user_search_by_id(c, target_id, from_channel=from_channel)
 
 
 # --- دالة جديدة: تشغيل حاسبة الأونو (إصلاح الزر) ---
@@ -3102,9 +3119,10 @@ def _is_invite_muted(muter_id, muted_id):
 async def send_game_invite(c: types.CallbackQuery):
     import datetime
     sender_id = c.from_user.id
+    from_channel = c.data.startswith("invite_ch_")
     try:
-        target_id = int(c.data.split("_")[1])
-    except (IndexError, ValueError):
+        target_id = int(c.data.replace("invite_ch_", "").replace("invite_", ""))
+    except (ValueError, AttributeError):
         await c.answer("⚠️ خطأ في البيانات.", show_alert=True)
         return
 
@@ -3147,6 +3165,8 @@ async def send_game_invite(c: types.CallbackQuery):
             parse_mode="Markdown"
         )
         await c.answer("✅ تم إرسال طلب اللعب بنجاح!", show_alert=True)
+        if from_channel:
+            await process_user_search_by_id(c, target_id, from_channel=True)
     except Exception:
         await c.answer("⚠️ تعذر إرسال الطلب (ربما قام اللاعب بحظر البوت).", show_alert=True)
 
@@ -3311,15 +3331,64 @@ async def reject_game_invite(c: types.CallbackQuery):
         await c.message.edit_text("❌ تم رفض الطلب.")
 
 
+def _post_options_kb(data: dict) -> InlineKeyboardMarkup:
+    """أزرار خيارات المنشور: حسابي، العب معي، تم."""
+    add_p = data.get("post_add_profile", True)
+    add_play = data.get("post_add_play", False)
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"👤 زر حسابي {'✓' if add_p else ''}", callback_data="post_toggle_profile")],
+        [InlineKeyboardButton(text=f"🎮 العب معي {'✓' if add_play else ''}", callback_data="post_toggle_play")],
+        [InlineKeyboardButton(text="✅ تم، أرسل رسالتك الآن", callback_data="post_ready_send")],
+    ])
+
+
 @router.callback_query(F.data == "player_post_start")
 async def player_post_start(c: types.CallbackQuery, state: FSMContext):
-    """بدء نشر منشور في قناة النشر (قناة واحدة)."""
+    """بدء نشر منشور: اختيار الخيارات ثم إرسال المحتوى."""
     if not _normalize_channel_target():
         return await c.answer("⚠️ نشر المنشورات غير متاح حالياً.", show_alert=True)
+    await state.set_state(PlayerPostStates.waiting_options)
+    await state.update_data(post_add_profile=True, post_add_play=False)
+    await c.message.edit_text(
+        "📢 **نشر منشور**\n\nاختر ما تريد إضافته تحت منشورك في القناة، ثم اضغط «تم، أرسل رسالتك الآن» وأرسل النص أو الصورة أو أي ميديا.\n\n"
+        "• **زر حسابي:** يظهر زر يفتح بروفايلك (متابعة، طلب لعب، رجوع للقناة).\n"
+        "• **العب معي:** يظهر زر من يضغطه ينضم معك في كيم ثنائي فوراً.\n\n"
+        "⚠️ لا يُسمح بنشر أرقام هواتف أو كلمات تخالف المعايير.",
+        reply_markup=_post_options_kb({"post_add_profile": True, "post_add_play": False}),
+        parse_mode="Markdown"
+    )
+    await c.answer()
+
+
+@router.callback_query(F.data == "post_toggle_profile")
+async def post_toggle_profile(c: types.CallbackQuery, state: FSMContext):
+    if await state.get_state() != PlayerPostStates.waiting_options.state:
+        return await c.answer()
+    data = await state.get_data()
+    data["post_add_profile"] = not data.get("post_add_profile", True)
+    await state.update_data(**data)
+    await c.message.edit_reply_markup(reply_markup=_post_options_kb(data))
+    await c.answer()
+
+
+@router.callback_query(F.data == "post_toggle_play")
+async def post_toggle_play(c: types.CallbackQuery, state: FSMContext):
+    if await state.get_state() != PlayerPostStates.waiting_options.state:
+        return await c.answer()
+    data = await state.get_data()
+    data["post_add_play"] = not data.get("post_add_play", False)
+    await state.update_data(**data)
+    await c.message.edit_reply_markup(reply_markup=_post_options_kb(data))
+    await c.answer()
+
+
+@router.callback_query(F.data == "post_ready_send")
+async def post_ready_send(c: types.CallbackQuery, state: FSMContext):
+    if await state.get_state() != PlayerPostStates.waiting_options.state:
+        return await c.answer()
     await state.set_state(PlayerPostStates.waiting_message)
     await c.message.edit_text(
-        "📢 **نشر منشور**\n\nأرسل النص أو الصور أو الصوت أو الفيديو أو الملصقات أو أي ميديا للنشر في القناة.\n\n⚠️ لا يُسمح بنشر أرقام هواتف أو كلمات تخالف المعايير.",
-        parse_mode="Markdown"
+        "📢 أرسل الآن النص أو الصور أو الصوت أو الفيديو أو الملصقات أو أي ميديا للنشر في القناة.\n\n⚠️ لا يُسمح بنشر أرقام هواتف أو كلمات تخالف المعايير."
     )
     await c.answer()
 
@@ -3360,7 +3429,7 @@ def _normalize_channel_target():
     return None
 
 
-async def _publish_media_to_channel(bot, message: types.Message, name: str, channel_id=None) -> bool:
+async def _publish_media_to_channel(bot, message: types.Message, name: str, channel_id=None, reply_markup=None) -> bool:
     """ينشر محتوى الرسالة (نص/صورة/صوت/...) في قناة النشر. يُرجع True عند النجاح."""
     ch = channel_id if channel_id is not None else _normalize_channel_target()
     if not ch:
@@ -3368,35 +3437,38 @@ async def _publish_media_to_channel(bot, message: types.Message, name: str, chan
     cap = f"👤 **{name}**\n\n{(message.caption or '').strip()}" if (message.caption or "").strip() else f"👤 **{name}**"
     if cap.endswith("\n\n"):
         cap = cap.rstrip()
+    kwargs = {"parse_mode": "Markdown"}
+    if reply_markup:
+        kwargs["reply_markup"] = reply_markup
     try:
         if message.text:
-            await bot.send_message(ch, f"👤 **{name}**\n\n{message.text}", parse_mode="Markdown")
+            await bot.send_message(ch, f"👤 **{name}**\n\n{message.text}", **kwargs)
             return True
         if message.photo:
-            await bot.send_photo(ch, message.photo[-1].file_id, caption=cap, parse_mode="Markdown")
+            await bot.send_photo(ch, message.photo[-1].file_id, caption=cap, **kwargs)
             return True
         if message.voice:
-            await bot.send_voice(ch, message.voice.file_id, caption=cap, parse_mode="Markdown")
+            await bot.send_voice(ch, message.voice.file_id, caption=cap, **kwargs)
             return True
         if message.video:
-            await bot.send_video(ch, message.video.file_id, caption=cap, parse_mode="Markdown")
+            await bot.send_video(ch, message.video.file_id, caption=cap, **kwargs)
             return True
         if message.animation:
-            await bot.send_animation(ch, message.animation.file_id, caption=cap, parse_mode="Markdown")
+            await bot.send_animation(ch, message.animation.file_id, caption=cap, **kwargs)
             return True
         if message.sticker:
             await bot.send_sticker(ch, message.sticker.file_id)
-            await bot.send_message(ch, f"👤 **{name}**", parse_mode="Markdown")
+            await bot.send_message(ch, f"👤 **{name}**", **kwargs)
             return True
         if message.document:
-            await bot.send_document(ch, message.document.file_id, caption=cap, parse_mode="Markdown")
+            await bot.send_document(ch, message.document.file_id, caption=cap, **kwargs)
             return True
         if message.audio:
-            await bot.send_audio(ch, message.audio.file_id, caption=cap, parse_mode="Markdown")
+            await bot.send_audio(ch, message.audio.file_id, caption=cap, **kwargs)
             return True
         if message.video_note:
             await bot.send_video_note(ch, message.video_note.file_id)
-            await bot.send_message(ch, f"👤 **{name}**", parse_mode="Markdown")
+            await bot.send_message(ch, f"👤 **{name}**", **kwargs)
             return True
     except Exception as e:
         print(f"[player_post] {e}")
@@ -3404,9 +3476,42 @@ async def _publish_media_to_channel(bot, message: types.Message, name: str, chan
     return False
 
 
+def _create_deferred_2p_room(creator_uid: int, creator_name: str) -> str:
+    """غرفة مؤجلة للعب معي: ناشر فقط، من ينقر «العب معي» ينضم وتبدأ كيم ثنائي. يُرجع room_id."""
+    code = generate_room_code()
+    db_query(
+        "INSERT INTO rooms (room_id, creator_id, max_players, score_limit, status, is_random) VALUES (%s, %s, 2, 0, 'waiting', TRUE)",
+        (code, creator_uid), commit=True
+    )
+    db_query(
+        "INSERT INTO room_players (room_id, user_id, player_name, is_ready) VALUES (%s, %s, %s, TRUE)",
+        (code, creator_uid, creator_name), commit=True
+    )
+    return code
+
+
+def _channel_post_buttons(publisher_uid: int, add_profile: bool, join_code: str = None) -> InlineKeyboardMarkup:
+    """أزرار تحت منشور القناة: حساب اللاعب، العب معي (إن وُجد)."""
+    bot_user = (BOT_USERNAME or "").strip().lstrip("@")
+    if not bot_user:
+        return None
+    rows = []
+    if add_profile:
+        rows.append([InlineKeyboardButton(text="👤 حساب اللاعب", url=f"https://t.me/{bot_user}?start=profile_{publisher_uid}")])
+    if join_code:
+        rows.append([InlineKeyboardButton(text="🎮 العب معي", url=f"https://t.me/{bot_user}?start=join_{join_code}")])
+    if not rows:
+        return None
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 @router.message(PlayerPostStates.waiting_message, F.text)
 async def player_post_receive_text(message: types.Message, state: FSMContext):
     """استقبال منشور نصي والتحقق ثم النشر في قناة النشر."""
+    uid = message.from_user.id
+    data = await state.get_data()
+    add_profile = data.get("post_add_profile", True)
+    add_play = data.get("post_add_play", False)
     await state.clear()
     if not _normalize_channel_target():
         return await message.answer("⚠️ نشر المنشورات غير متاح حالياً.")
@@ -3414,16 +3519,21 @@ async def player_post_receive_text(message: types.Message, state: FSMContext):
     ok, reason = check_post_content(text)
     if not ok:
         return await message.answer(f"⛔ {reason}")
-    name = _get_player_name_for_post(message.from_user.id, message.from_user.full_name)
+    name = _get_player_name_for_post(uid, message.from_user.full_name)
     text_to_send = f"👤 **{name}**\n\n{text}"
     chat_target = _normalize_channel_target()
     if not chat_target:
         return await message.answer("⚠️ نشر المنشورات غير متاح حالياً.")
+    join_code = None
+    if add_play:
+        join_code = _create_deferred_2p_room(uid, name)
+    reply_kb = _channel_post_buttons(uid, add_profile, join_code)
     try:
         await message.bot.send_message(
             chat_id=chat_target,
             text=text_to_send,
-            parse_mode="Markdown"
+            parse_mode="Markdown",
+            reply_markup=reply_kb
         )
         kb_after = []
         if PUBLISH_CHANNEL_USERNAME:
@@ -3444,7 +3554,11 @@ async def player_post_receive_text(message: types.Message, state: FSMContext):
 
 @router.message(PlayerPostStates.waiting_message, F.photo | F.voice | F.video | F.animation | F.sticker | F.document | F.audio | F.video_note)
 async def player_post_receive_media(message: types.Message, state: FSMContext):
-    """استقبال منشور ميديا (صورة، صوت، فيديو، ملصق، ...) والتحقق من التسمية ثم النشر."""
+    """استقبال منشور ميديا والتحقق ثم النشر مع أزرار (حسابي، العب معي) حسب الخيارات."""
+    uid = message.from_user.id
+    data = await state.get_data()
+    add_profile = data.get("post_add_profile", True)
+    add_play = data.get("post_add_play", False)
     await state.clear()
     if not _normalize_channel_target():
         return await message.answer("⚠️ نشر المنشورات غير متاح حالياً.")
@@ -3453,8 +3567,10 @@ async def player_post_receive_media(message: types.Message, state: FSMContext):
         ok, reason = check_post_content(caption_text)
         if not ok:
             return await message.answer(f"⛔ {reason}")
-    name = _get_player_name_for_post(message.from_user.id, message.from_user.full_name)
-    if await _publish_media_to_channel(message.bot, message, name):
+    name = _get_player_name_for_post(uid, message.from_user.full_name)
+    join_code = _create_deferred_2p_room(uid, name) if add_play else None
+    reply_kb = _channel_post_buttons(uid, add_profile, join_code)
+    if await _publish_media_to_channel(message.bot, message, name, reply_markup=reply_kb):
         kb_after = []
         if PUBLISH_CHANNEL_USERNAME:
             ch_user = PUBLISH_CHANNEL_USERNAME.lstrip("@")
