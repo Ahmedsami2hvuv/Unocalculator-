@@ -1078,16 +1078,10 @@ async def handle_play(c: types.CallbackQuery, state: FSMContext):
             alerts[opp_id] = f"{symbol} {p_name} منعك من اللعب!"
         elif "💧" in card:
             next_turn = await handle_draw1_card_action(c, room_id, p_idx, opp_id, opp_idx, card, room, players, alerts)
-            await refresh_ui_2p(room_id, c.bot, alerts)
-            return 
         elif "🌊" in card:
             next_turn = await handle_draw2_card_action(c, room_id, p_idx, opp_id, opp_idx, card, room, players, alerts)
-            await refresh_ui_2p(room_id, c.bot, alerts)
-            return 
         elif "+2" in card:
             next_turn = await handle_colored_draw2_action(c, room_id, p_idx, opp_id, opp_idx, card, room, players, alerts)
-            await refresh_ui_2p(room_id, c.bot, alerts)
-            return
 
         db_query("UPDATE rooms SET turn_index = %s WHERE room_id = %s", (next_turn, room_id), commit=True)
         current_id = c.from_user.id if next_turn == p_idx else opp_id
