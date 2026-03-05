@@ -309,7 +309,7 @@ def create_replay_session(players: list, room: dict, mode: str, summary_text: st
 
 
 def build_game_end_keyboard(replay_id: str, for_user_id: int) -> InlineKeyboardMarkup:
-    """كيبورد نهاية اللعبة: كل اللاعبين يظهرون مع حالة المتابعة (✓ أتابعه، ✓✓ نتابع بعض، 📥 يتابعني فقط، ➕ لا متابعة) وزر متابعة/إلغاء."""
+    """كيبورد نهاية اللعبة: كل اللاعبين مع (✓ أتابعه، ➕ لا أتابعه، 📥 يتابعني، 🔄 نتابع بعض) وزر متابعة/إلغاء. الضغط على متابعة لا يخفي القائمة."""
     rdata = replay_data.get(replay_id)
     if not rdata:
         return InlineKeyboardMarkup(inline_keyboard=[
@@ -336,7 +336,7 @@ def build_game_end_keyboard(replay_id: str, for_user_id: int) -> InlineKeyboardM
             (pid, for_user_id)
         )
         if is_following and is_follower:
-            icon = "✓✓"
+            icon = "🔄"
             status_label = "نتابع بعض"
             btn_text = "إلغاء المتابعة"
             cb = f"gameend_f_{replay_id}_{pid}"
@@ -347,7 +347,7 @@ def build_game_end_keyboard(replay_id: str, for_user_id: int) -> InlineKeyboardM
             cb = f"gameend_f_{replay_id}_{pid}"
         elif is_follower:
             icon = "📥"
-            status_label = "يتابعني فقط"
+            status_label = "يتابعني"
             btn_text = "متابعة"
             cb = f"gameend_f_{replay_id}_{pid}"
         else:
@@ -1784,7 +1784,7 @@ async def _next_round_timeout(room_id, bot):
 # --- نهاية اللعبة: تبديل متابعة من نفس الشاشة وإعادة رسم القائمة ---
 @router.callback_query(F.data.startswith("gameend_f_"))
 async def gameend_toggle_follow(c: types.CallbackQuery):
-    """تبديل متابعة/إلغاء من شاشة نهاية اللعبة دون الخروج للبروفايل."""
+    """تبديل متابعة/إلغاء من شاشة نهاية اللعبة. يبلغ المستخدم ولا يخفي قائمة اللاعبين."""
     parts = c.data.split("_")
     if len(parts) < 4:
         return await c.answer("⚠️ خطأ.", show_alert=True)
@@ -1803,7 +1803,7 @@ async def gameend_toggle_follow(c: types.CallbackQuery):
     else:
         try:
             db_query("INSERT INTO follows (follower_id, following_id) VALUES (%s, %s)", (uid, target_id), commit=True)
-            await c.answer("✅ تمت المتابعة بنجاح!")
+            await c.answer("✅ تمت متابعة هذا اللاعب. القائمة تبقى لعرض الباقين.")
         except Exception:
             await c.answer("⚠️ أنت تتابع هذا اللاعب بالفعل.", show_alert=True)
     new_kb = build_game_end_keyboard(replay_id, uid)
@@ -1845,7 +1845,7 @@ async def gameend_back_to_list(c: types.CallbackQuery):
     await c.answer()
 
 
-# طلب الصداقة أُزيل: نستخدم المتابعة الفورية فقط. لو وُجد زر قديم addfrnd_ نحوّله لمتابعة
+# طلب الصداقة أُزيل: نستخدم المتابعة الفورية فقط. الضغط على إضافة/متابعة يبلغ المستخدم ولا يخفي قائمة اللاعبين.
 @router.callback_query(F.data.startswith("addfrnd_"))
 async def add_friend_as_follow(c: types.CallbackQuery):
     target_id = int(c.data.split("_")[1])
@@ -1854,10 +1854,10 @@ async def add_friend_as_follow(c: types.CallbackQuery):
         return await c.answer("🧐 لا يمكنك متابعة نفسك!", show_alert=True)
     try:
         db_query("INSERT INTO follows (follower_id, following_id) VALUES (%s, %s)", (uid, target_id), commit=True)
-        await c.answer("✅ تمت المتابعة بنجاح!")
+        await c.answer("✅ تمت متابعة هذا اللاعب. القائمة تبقى لعرض الباقين.")
     except Exception:
         await c.answer("⚠️ أنت تتابع هذا اللاعب بالفعل.", show_alert=True)
-    await process_user_search_by_id(c, target_id)
+    # لا نفتح البروفايل حتى تبقى قائمة اللاعبين ظاهرة لمتابعة الباقين
 
 @router.callback_query(F.data.startswith("finv_"))
 async def toggle_friend_invite(c: types.CallbackQuery):
