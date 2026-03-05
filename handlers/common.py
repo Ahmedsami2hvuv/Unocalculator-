@@ -1,5 +1,8 @@
 import os
 import re
+import sys
+import importlib.util
+import logging
 from aiogram import Router, types, F
 from aiogram.filters import Command, BaseFilter
 from aiogram.fsm.context import FSMContext
@@ -11,6 +14,7 @@ import random, string, json, asyncio, uuid
 from urllib.parse import unquote
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 
+logger = logging.getLogger(__name__)
 router = Router()
 
 # --- اشتراك القناة (CHANNEL_ID) ---
@@ -20,16 +24,41 @@ CHANNEL_ID = os.getenv("CHANNEL_ID", "").strip() or None  # مثال: @ko_kseb �
 PUBLISH_CHANNEL_ID = os.getenv("PUBLISH_CHANNEL_ID", "").strip() or None
 PUBLISH_CHANNEL_USERNAME = os.getenv("PUBLISH_CHANNEL_USERNAME", "").strip() or None
 BOT_USERNAME = os.getenv("BOT_USERNAME", "").strip() or None
-try:
-    import channel_config as _cc
-    if getattr(_cc, "PUBLISH_CHANNEL_ID", None):
+
+# تحميل channel_config من نفس مجلد هذا الملف (يعمل أينما شغّلت البوت)
+_cc = None
+_handlers_dir = os.path.dirname(os.path.abspath(__file__))
+_config_path = os.path.join(_handlers_dir, "channel_config.py")
+if os.path.isfile(_config_path):
+    try:
+        spec = importlib.util.spec_from_file_location("channel_config", _config_path)
+        _cc = importlib.util.module_from_spec(spec)
+        sys.modules["channel_config"] = _cc
+        spec.loader.exec_module(_cc)
+    except Exception as e:
+        logger.warning("Could not load channel_config from file: %s", e)
+        _cc = None
+if _cc is None:
+    try:
+        from . import channel_config as _cc
+    except Exception:
+        try:
+            import channel_config as _cc
+        except Exception:
+            pass
+if _cc:
+    if getattr(_cc, "PUBLISH_CHANNEL_ID", None) is not None:
         PUBLISH_CHANNEL_ID = _cc.PUBLISH_CHANNEL_ID
     if getattr(_cc, "PUBLISH_CHANNEL_USERNAME", None):
         PUBLISH_CHANNEL_USERNAME = _cc.PUBLISH_CHANNEL_USERNAME
     if getattr(_cc, "BOT_USERNAME", None):
         BOT_USERNAME = _cc.BOT_USERNAME
-except Exception:
-    pass
+
+# سجل عند التشغيل لمعرفة إن كانت القناة مضبوطة (للتشخيص)
+if PUBLISH_CHANNEL_ID is not None or PUBLISH_CHANNEL_USERNAME:
+    logger.info("Publish channel configured: id=%s username=%s", PUBLISH_CHANNEL_ID, PUBLISH_CHANNEL_USERNAME)
+else:
+    logger.warning("Publish channel NOT configured - PUBLISH_CHANNEL_ID and PUBLISH_CHANNEL_USERNAME are empty")
 
 async def is_channel_member(bot, user_id: int) -> bool:
     if not CHANNEL_ID:
@@ -3598,7 +3627,7 @@ async def _publish_media_to_channel(bot, message: types.Message, name: str, chan
             sent = await bot.send_message(ch, f"👤 **{name}**", **kwargs)
             return True, sent.message_id
     except Exception as e:
-        print(f"[player_post] {e}")
+        logger.exception("player_post: _publish_media_to_channel failed for ch=%s: %s", ch, e)
         return False, None
     return False, None
 
@@ -3645,23 +3674,24 @@ async def player_post_receive_text(message: types.Message, state: FSMContext):
     add_profile = data.get("post_add_profile", True)
     add_play = data.get("post_add_play", False)
     await state.clear()
-    if not _normalize_channel_target():
-        return await message.answer("⚠️ نشر المنشورات غير متاح حالياً.")
+    chat_target = _normalize_channel_target()
+    if not chat_target:
+        return await message.answer(
+            "⚠️ نشر المنشورات غير متاح حالياً.\n\n"
+            "تحقق من إعدادات القناة في handlers/channel_config.py (PUBLISH_CHANNEL_ID و PUBLISH_CHANNEL_USERNAME) أو في متغيرات البيئة."
+        )
     text = (message.text or "").strip()
     ok, reason = check_post_content(text)
     if not ok:
         return await message.answer(f"⛔ {reason}")
     name = _get_player_name_for_post(uid, message.from_user.full_name)
     text_to_send = f"👤 **{name}**\n\n{text}"
-    chat_target = _normalize_channel_target()
-    if not chat_target:
-        return await message.answer("⚠️ نشر المنشورات غير متاح حالياً.")
     join_code = None
     if add_play:
         try:
             join_code = _create_deferred_2p_room(uid, name)
         except Exception as e:
-            print(f"[player_post] create_room: {e}")
+            logger.warning("player_post: create_room: %s", e)
     reply_kb = _channel_post_buttons(uid, add_profile, join_code)
     if (add_profile or join_code) and not reply_kb:
         await message.answer(
@@ -3670,6 +3700,7 @@ async def player_post_receive_text(message: types.Message, state: FSMContext):
         )
         return
     sent_msg_id = None
+    logger.info("player_post: sending text to channel chat_id=%s", chat_target)
     try:
         sent = await message.bot.send_message(
             chat_id=chat_target,
@@ -3678,8 +3709,9 @@ async def player_post_receive_text(message: types.Message, state: FSMContext):
             reply_markup=reply_kb
         )
         sent_msg_id = sent.message_id
+        logger.info("player_post: sent successfully message_id=%s", sent_msg_id)
     except Exception as e:
-        print(f"[player_post] with buttons: {e}")
+        logger.exception("player_post: send_message with buttons failed: %s", e)
         try:
             sent = await message.bot.send_message(
                 chat_id=chat_target,
@@ -3687,10 +3719,11 @@ async def player_post_receive_text(message: types.Message, state: FSMContext):
                 parse_mode="Markdown"
             )
             sent_msg_id = sent.message_id
+            logger.info("player_post: sent without buttons message_id=%s", sent_msg_id)
         except Exception as e2:
-            print(f"[player_post] without buttons: {e2}")
+            logger.exception("player_post: send_message without buttons failed: %s", e2)
             await message.answer(
-                "❌ فشل النشر.\n\nتأكد أن البوت مضاف في القناة كـ **مسؤول** وله صلاحية «نشر رسائل»."
+                "❌ فشل النشر.\n\nتأكد أن البوت مضاف في القناة كـ **مسؤول** وله صلاحية «نشر رسائل». الخطأ: " + str(e2)[:200]
             )
             return
     post_id = None
@@ -3709,7 +3742,7 @@ async def player_post_receive_text(message: types.Message, state: FSMContext):
                         chat_id=chat_target, message_id=sent_msg_id, reply_markup=new_kb
                     )
         except Exception as e:
-            print(f"[player_post] save_post: {e}")
+            logger.exception("player_post: save_post: %s", e)
     kb_after = []
     if PUBLISH_CHANNEL_USERNAME:
         ch_user = PUBLISH_CHANNEL_USERNAME.lstrip("@")
@@ -3729,8 +3762,10 @@ async def player_post_receive_media(message: types.Message, state: FSMContext):
     add_profile = data.get("post_add_profile", True)
     add_play = data.get("post_add_play", False)
     await state.clear()
-    if not _normalize_channel_target():
+    chat_target_media = _normalize_channel_target()
+    if not chat_target_media:
         return await message.answer("⚠️ نشر المنشورات غير متاح حالياً.")
+    logger.info("player_post: publishing media to channel chat_id=%s", chat_target_media)
     caption_text = (message.caption or "").strip()
     if caption_text:
         ok, reason = check_post_content(caption_text)
@@ -3748,7 +3783,7 @@ async def player_post_receive_media(message: types.Message, state: FSMContext):
     if not ok and reply_kb:
         ok, sent_msg_id = await _publish_media_to_channel(message.bot, message, name, reply_markup=None)
     if ok and sent_msg_id is not None:
-        chat_target = _normalize_channel_target()
+        chat_target = chat_target_media
         try:
             row = db_query(
                 "INSERT INTO channel_posts (channel_id, message_id, publisher_uid, add_profile, join_code) VALUES (%s, %s, %s, %s, %s) RETURNING id",
@@ -3763,7 +3798,7 @@ async def player_post_receive_media(message: types.Message, state: FSMContext):
                         chat_id=chat_target, message_id=sent_msg_id, reply_markup=new_kb
                     )
         except Exception as e:
-            print(f"[player_post] save_post media: {e}")
+            logger.exception("player_post: save_post media: %s", e)
     if ok:
         kb_after = []
         if PUBLISH_CHANNEL_USERNAME:
@@ -3776,7 +3811,7 @@ async def player_post_receive_media(message: types.Message, state: FSMContext):
         )
     else:
         await message.answer(
-            "❌ فشل النشر.\n\nتأكد أن البوت مضاف في القناة كـ **مسؤول** وله صلاحية «نشر رسائل»."
+            "❌ فشل النشر (الميديا). تأكد أن البوت مضاف في القناة كـ مسؤول وله صلاحية «نشر رسائل». راجع الـ logs للتفاصيل."
         )
 
 
