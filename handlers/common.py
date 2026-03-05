@@ -533,13 +533,23 @@ class FilterInRoom(BaseFilter):
         return get_user_current_room(message.from_user.id) is not None
 
 
+# مراجع لمهام الحذف المؤجل حتى لا تُهمل من الـ event loop
+_delete_after_tasks = set()
+
 async def _delete_message_after(bot, chat_id: int, message_id: int, seconds: int = 10):
     """حذف رسالة بعد ثوانٍ بدون تنبيه."""
-    await asyncio.sleep(seconds)
     try:
+        await asyncio.sleep(seconds)
         await bot.delete_message(chat_id, message_id)
+    except asyncio.CancelledError:
+        raise
     except Exception:
         pass
+    finally:
+        try:
+            _delete_after_tasks.discard(asyncio.current_task())
+        except Exception:
+            pass
 
 
 async def send_message_then_delete(bot, chat_id: int, text: str, delete_after_seconds: int = 5, **kwargs):
@@ -550,7 +560,11 @@ async def send_message_then_delete(bot, chat_id: int, text: str, delete_after_se
     """
     try:
         sent = await bot.send_message(chat_id, text, **kwargs)
-        asyncio.create_task(_delete_message_after(bot, chat_id, sent.message_id, delete_after_seconds))
+        task = asyncio.create_task(
+            _delete_message_after(bot, chat_id, sent.message_id, delete_after_seconds)
+        )
+        _delete_after_tasks.add(task)
+        task.add_done_callback(lambda t: _delete_after_tasks.discard(t))
         return sent
     except Exception:
         return None
@@ -618,10 +632,14 @@ async def room_chat_broadcast(message: types.Message):
         try:
             mid = await _send_media_copy(message.bot, p["user_id"], message, sender_name)
             if mid:
-                asyncio.create_task(_delete_message_after(message.bot, p["user_id"], mid, 10))
+                t = asyncio.create_task(_delete_message_after(message.bot, p["user_id"], mid, 10))
+                _delete_after_tasks.add(t)
+                t.add_done_callback(lambda x: _delete_after_tasks.discard(x))
         except Exception:
             pass
-    asyncio.create_task(_delete_message_after(message.bot, message.chat.id, message.message_id, 10))
+    t2 = asyncio.create_task(_delete_message_after(message.bot, message.chat.id, message.message_id, 10))
+    _delete_after_tasks.add(t2)
+    t2.add_done_callback(lambda x: _delete_after_tasks.discard(x))
 
 
 def generate_room_code():
@@ -1725,7 +1743,8 @@ async def view_profile_handler(c: types.CallbackQuery):
         await c.answer("⚠️ فشل فتح بروفايل اللاعب.", show_alert=True)
 
 
-async def process_user_search_by_id(c: types.CallbackQuery, target_id: int):
+async def process_user_search_by_id(c: types.CallbackQuery, target_id: int, back_to_replay_id: str = None):
+    """عرض بروفايل اللاعب. إذا back_to_replay_id معطى (من شاشة نهاية اللعبة) يُضاف زر رجوع لشاشة اللعبة."""
     uid = c.from_user.id
 
     # جلب اللاعب المطلوب
@@ -1772,7 +1791,10 @@ async def process_user_search_by_id(c: types.CallbackQuery, target_id: int):
     ]
     if (uid, target_id) in invite_mutes:
         kb.append([InlineKeyboardButton(text="✏️ تعديل الكتم", callback_data=f"mute_inv_{target_id}")])
-    kb.append([InlineKeyboardButton(text=t(uid, "btn_back"), callback_data="social_menu")])
+    if back_to_replay_id:
+        kb.append([InlineKeyboardButton(text="🔙 رجوع لشاشة اللعبة", callback_data=f"gameend_back_{back_to_replay_id}")])
+    else:
+        kb.append([InlineKeyboardButton(text=t(uid, "btn_back"), callback_data="social_menu")])
     await c.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
     
 
@@ -2017,7 +2039,7 @@ async def gameend_toggle_follow(c: types.CallbackQuery):
 
 @router.callback_query(F.data.startswith("gameend_p_"))
 async def gameend_open_profile(c: types.CallbackQuery):
-    """فتح بروفايل لاعب من شاشة نهاية اللعبة مع زر رجوع للعبة."""
+    """فتح صفحة معلومات اللاعب من شاشة نهاية اللعبة مع زر رجوع واحد فقط."""
     parts = c.data.split("_")
     if len(parts) < 4:
         return await c.answer("⚠️ خطأ.", show_alert=True)
@@ -2026,12 +2048,7 @@ async def gameend_open_profile(c: types.CallbackQuery):
     rdata = replay_data.get(replay_id)
     if not rdata:
         return await c.answer("⚠️ انتهت صلاحية هذه الشاشة.", show_alert=True)
-    await process_user_search_by_id(c, target_id)
-    kb = c.message.reply_markup
-    if kb and kb.inline_keyboard:
-        new_rows = list(kb.inline_keyboard)
-        new_rows.append([InlineKeyboardButton(text="🔙 رجوع لشاشة اللعبة", callback_data=f"gameend_back_{replay_id}")])
-        await c.message.edit_reply_markup(reply_markup=InlineKeyboardMarkup(inline_keyboard=new_rows))
+    await process_user_search_by_id(c, target_id, back_to_replay_id=replay_id)
 
 
 @router.callback_query(F.data.startswith("gameend_back_"))
