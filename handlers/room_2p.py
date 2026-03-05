@@ -5,6 +5,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from database import db_query
 from config import IMG_UNO_SAFE_ME, IMG_UNO_SAFE_OPP, IMG_CATCH_SUCCESS, IMG_CATCH_PENALTY
+from handlers.common import send_message_then_delete
 import json, random, asyncio, uuid
 from collections import Counter
 
@@ -74,6 +75,20 @@ def sort_hand(hand):
         return (2, card)
     hand.sort(key=card_sort_key)
     return hand
+
+def ensure_deck_from_discard(room_id, room):
+    """إذا كومة السحب فارغة، خذ كل الأوراق النازلة واخلطها لتصبح كومة سحب جديدة. يُرجع قائمة deck."""
+    deck = safe_load(room.get('deck', '[]'))
+    if deck:
+        return deck
+    discard = safe_load(room.get('discard_pile', '[]'))
+    if not discard:
+        return []
+    new_deck = list(discard)
+    random.shuffle(new_deck)
+    db_query("UPDATE rooms SET deck = %s, discard_pile = '[]' WHERE room_id = %s", (json.dumps(new_deck), room_id), commit=True)
+    return new_deck
+
 
 def calculate_points(hand):
     total = 0
@@ -166,9 +181,9 @@ async def challenge_timeout_2p(room_id, bot):
         db_query("UPDATE room_players SET hand = %s WHERE user_id = %s", (json.dumps(opp_hand), opp_id), commit=True)
         db_query("UPDATE rooms SET deck = %s WHERE room_id = %s", (json.dumps(deck), room_id), commit=True)
 
-        # إخطار الجميع
-        await bot.send_message(opp_id, "⏰ انتهى الوقت! تم قبول السحب تلقائياً (سحبت 4 ورقات).")
-        await bot.send_message(players[p_idx]['user_id'], "تم قبول السحب افتراضيًا. يمكنك اللعب الآن بأي لون.")
+        # إخطار الجميع (تُحذف بعد 5 ثواني)
+        await send_message_then_delete(bot, opp_id, "⏰ انتهى الوقت! تم قبول السحب تلقائياً (سحبت 4 ورقات).", delete_after_seconds=5)
+        await send_message_then_delete(bot, players[p_idx]['user_id'], "تم قبول السحب افتراضيًا. يمكنك اللعب الآن بأي لون.", delete_after_seconds=5)
 
         # تحديث move (الدور يرجع للاعب الأصلي، current_color='ANY' لتكون أي لون مسموحة)
         db_query("UPDATE rooms SET turn_index = %s, current_color = 'ANY' WHERE room_id = %s", (p_idx, room_id), commit=True)
@@ -394,10 +409,11 @@ async def color_timeout_2p(room_id, bot, player_id):
                    InlineKeyboardButton(text="✅ قبول", callback_data=f"rs_n_{room_id}_{chosen_color}")]]
             await bot.send_message(opp_id, f"🚨 {p_name} لعب 🔥 +4 وغير اللون لـ {chosen_color}!",
                                    reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
-            cd_msg = await bot.send_message(opp_id, "⏳ باقي 20 ثانية للرد\n🟢🟢🟢🟢🟢🟢🟢🟢🟢🟢")
-            challenge_countdown_msgs[room_id] = {'bot': bot, 'chat_id': opp_id, 'msg_id': cd_msg.message_id}
+            cd_msg = await send_message_then_delete(bot, opp_id, "⏳ باقي 20 ثانية للرد\n🟢🟢🟢🟢🟢🟢🟢🟢🟢🟢", delete_after_seconds=5)
+            if cd_msg:
+                challenge_countdown_msgs[room_id] = {'bot': bot, 'chat_id': opp_id, 'msg_id': cd_msg.message_id}
             challenge_timers[room_id] = asyncio.create_task(challenge_timeout_2p(room_id, bot))
-            await bot.send_message(player_id, f"⏰ انتهى الوقت! تم اختيار اللون {chosen_color} تلقائياً. بانتظار رد الخصم...")
+            await send_message_then_delete(bot, player_id, f"⏰ انتهى الوقت! تم اختيار اللون {chosen_color} تلقائياً. بانتظار رد الخصم...", delete_after_seconds=5)
             return
             
         deck = safe_load(room['deck'])
@@ -471,10 +487,11 @@ async def background_auto_draw(room_id, bot, curr_idx):
         if room['turn_index'] != curr_idx:
             return
 
-        deck = safe_load(room['deck'])
+        deck = ensure_deck_from_discard(room_id, room)
         if not deck:
             deck = generate_h2o_deck()
             random.shuffle(deck)
+            db_query("UPDATE rooms SET deck = %s WHERE room_id = %s", (json.dumps(deck), room_id), commit=True)
 
         curr_hand = safe_load(players[curr_idx]['hand'])
         new_card = deck.pop(0)
@@ -536,7 +553,7 @@ async def force_draw_and_pass(room_id, bot, p_idx):
     players = get_ordered_players(room_id)
     user_id = players[p_idx]['user_id']
 
-    deck = safe_load(room['deck'])
+    deck = ensure_deck_from_discard(room_id, room)
     if deck:
         new_card = deck.pop(0)
         hand = safe_load(players[p_idx]['hand'])
@@ -617,7 +634,8 @@ async def send_or_update_game_ui(room_id, bot, user_id, remaining_seconds=None, 
         if is_my_turn:
             if room_id in auto_draw_tasks:
                 controls.append(InlineKeyboardButton(text="➡️ مرر الدور", callback_data=f"pass_{room_id}"))
-            if len(hand) == 2:
+            # زر الأونو يظهر فقط عند ورقتين وفيها ورقة تعمل (لا يظهر أثناء انتظار السحب التلقائي)
+            if len(hand) == 2 and any(check_validity(c, room['top_card'], room['current_color']) for c in hand):
                 controls.append(InlineKeyboardButton(text="🚨 اونو!", callback_data=f"un_{room_id}"))
         
         # منطق الصيدة
@@ -757,7 +775,7 @@ async def handle_draw1_card_action(c, room_id, p_idx, opp_id, opp_idx, card, roo
     """معالجة جوكر +1 (💧) - كأكشن: يسحب الخصم ورقة واحدة"""
     next_turn = p_idx  # الدور يبقى عند اللاعب
     p_name = players[p_idx].get('player_name') or "لاعب"
-    deck = safe_load(room['deck'])
+    deck = ensure_deck_from_discard(room_id, room)
     opp_hand = safe_load(players[opp_idx]['hand'])
     
     # سحب ورقة واحدة للخصم
@@ -782,10 +800,13 @@ async def handle_draw2_card_action(c, room_id, p_idx, opp_id, opp_idx, card, roo
     """معالجة جوكر +2 (🌊) - كأكشن: يسحب الخصم ورقتين"""
     next_turn = p_idx
     p_name = players[p_idx].get('player_name') or "لاعب"
-    deck = safe_load(room['deck'])
+    deck = ensure_deck_from_discard(room_id, room)
     opp_hand = safe_load(players[opp_idx]['hand'])
     drawn_cards = []
     for _ in range(2):
+        if not deck:
+            room = db_query("SELECT * FROM rooms WHERE room_id = %s", (room_id,))[0]
+            deck = ensure_deck_from_discard(room_id, room)
         if deck:
             drawn_cards.append(deck.pop(0))
     if drawn_cards:
@@ -805,14 +826,19 @@ async def handle_colored_draw2_action(c, room_id, p_idx, opp_id, opp_idx, card, 
     """معالجة ورقة +2 الملونة - تسحب الخصم ورقتين والدور يبقى للاعب مع تثبيت لون الورقة"""
     next_turn = p_idx  # الدور يبقى عند نفس اللاعب
     p_name = players[p_idx].get('player_name') or "لاعب"
-    deck = safe_load(room['deck'])
+    deck = ensure_deck_from_discard(room_id, room)
+    if not deck:
+        deck = generate_h2o_deck()
+        random.shuffle(deck)
+        db_query("UPDATE rooms SET deck = %s WHERE room_id = %s", (json.dumps(deck), room_id), commit=True)
     opp_hand = safe_load(players[opp_idx]['hand'])
     drawn_cards = []
     for _ in range(2):
         if not deck:
-            deck = generate_h2o_deck()
-            random.shuffle(deck)
-        drawn_cards.append(deck.pop(0))
+            room = db_query("SELECT * FROM rooms WHERE room_id = %s", (room_id,))[0]
+            deck = ensure_deck_from_discard(room_id, room)
+        if deck:
+            drawn_cards.append(deck.pop(0))
     opp_hand.extend(drawn_cards)
     card_color = card.split()[0]
     db_query("UPDATE room_players SET hand = %s WHERE user_id = %s", 
@@ -868,8 +894,9 @@ async def handle_wild_draw4_card(c, state: FSMContext, room_id, p_idx, opp_id, p
             f"🔥 {p_name} لعب جوكر +4!\nهل تريد التحدي؟ لديك 20 ثانية للاختيار.",
             reply_markup=kb
         )
-        cd_msg = await c.bot.send_message(opp_id, "⏳ باقي 20 ثانية للرد\n🟢🟢🟢🟢🟢🟢🟢🟢🟢🟢")
-        challenge_countdown_msgs[room_id] = {'bot': c.bot, 'chat_id': opp_id, 'msg_id': cd_msg.message_id}
+        cd_msg = await send_message_then_delete(c.bot, opp_id, "⏳ باقي 20 ثانية للرد\n🟢🟢🟢🟢🟢🟢🟢🟢🟢🟢", delete_after_seconds=5)
+        if cd_msg:
+            challenge_countdown_msgs[room_id] = {'bot': c.bot, 'chat_id': opp_id, 'msg_id': cd_msg.message_id}
         challenge_timers[room_id] = asyncio.create_task(challenge_timeout_2p(room_id, c.bot))
         await c.answer("✅ بانتظار رد الخصم على جوكر +4، لا يمكنك اللعب الآن.", show_alert=True)
         await send_or_update_game_ui(room_id, c.bot, c.from_user.id, alert_text="🔥 لعبت جوكر +4!\nبانتظار رد الخصم.", remaining_seconds=None)
@@ -907,13 +934,11 @@ async def handle_wild_color_card(c, state: FSMContext, room_id, p_idx, opp_id, p
         'p_idx': p_idx, 
         'prev_color': room['current_color']
     }
-    cd_msg = await c.bot.send_message(
-        c.from_user.id, 
-        "⏳ باقي 20 ثانية لاختيار اللون\n🟢🟢🟢🟢🟢🟢🟢🟢🟢🟢"
-    )
-    if c.from_user.id not in temp_messages:
-        temp_messages[c.from_user.id] = []
-    temp_messages[c.from_user.id].append(cd_msg.message_id)
+    cd_msg = await send_message_then_delete(c.bot, c.from_user.id, "⏳ باقي 20 ثانية لاختيار اللون\n🟢🟢🟢🟢🟢🟢🟢🟢🟢🟢", delete_after_seconds=5)
+    if cd_msg:
+        if c.from_user.id not in temp_messages:
+            temp_messages[c.from_user.id] = []
+        temp_messages[c.from_user.id].append(cd_msg.message_id)
     color_timers[room_id] = asyncio.create_task(
         color_timeout_2p(room_id, c.bot, c.from_user.id))
 
@@ -994,7 +1019,7 @@ async def handle_play(c: types.CallbackQuery, state: FSMContext):
         opp_id = players[opp_idx]['user_id']
         
         if not check_validity(card, room['top_card'], room['current_color']):
-            deck = safe_load(room['deck'])
+            deck = ensure_deck_from_discard(room_id, room)
             penalty_cards = []
             if deck:
                 penalty_cards.append(deck.pop(0))
@@ -1138,11 +1163,9 @@ async def handle_color(c: types.CallbackQuery, state: FSMContext):
                 f"🚨 {p_name} لعب 🔥 +4 وغير اللون لـ {chosen_color}!", 
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=kb)
             )
-            cd_msg = await c.bot.send_message(
-                opp_id, 
-                "⏳ باقي 20 ثانية للرد\n🟢🟢🟢🟢🟢🟢🟢🟢🟢🟢"
-            )
-            challenge_countdown_msgs[room_id] = {'bot': c.bot, 'chat_id': opp_id, 'msg_id': cd_msg.message_id}
+            cd_msg = await send_message_then_delete(c.bot, opp_id, "⏳ باقي 20 ثانية للرد\n🟢🟢🟢🟢🟢🟢🟢🟢🟢🟢", delete_after_seconds=5)
+            if cd_msg:
+                challenge_countdown_msgs[room_id] = {'bot': c.bot, 'chat_id': opp_id, 'msg_id': cd_msg.message_id}
             challenge_timers[room_id] = asyncio.create_task(
                 challenge_timeout_2p(room_id, c.bot)
             )
@@ -1151,14 +1174,16 @@ async def handle_color(c: types.CallbackQuery, state: FSMContext):
             return
         
         penalty = 1 if "💧" in card else (2 if "🌊" in card else 0)
-        room_res = db_query("SELECT deck FROM rooms WHERE room_id = %s", (room_id,))[0]
-        deck = safe_load(room_res['deck'])
+        deck = ensure_deck_from_discard(room_id, room)
         alerts = {}
         
         if penalty > 0:
             opp_h = safe_load(players[(p_idx + 1) % 2]['hand'])
             for _ in range(penalty):
-                if deck: 
+                if not deck:
+                    room = db_query("SELECT * FROM rooms WHERE room_id = %s", (room_id,))[0]
+                    deck = ensure_deck_from_discard(room_id, room)
+                if deck:
                     opp_h.append(deck.pop(0))
             db_query("UPDATE room_players SET hand = %s WHERE user_id = %s", 
                     (json.dumps(opp_h), opp_id), commit=True)
@@ -1212,15 +1237,19 @@ async def handle_challenge_decision(c: types.CallbackQuery):
         opp_id = players[opp_idx]['user_id']
         user_id = players[p_idx]['user_id']
 
-        deck = safe_load(room['deck'])
+        deck = ensure_deck_from_discard(room_id, room)
         if decision == "n":
             opp_hand = safe_load(players[opp_idx]['hand'])
             for _ in range(4):
-                if deck: opp_hand.append(deck.pop(0))
+                if not deck:
+                    room = db_query("SELECT * FROM rooms WHERE room_id = %s", (room_id,))[0]
+                    deck = ensure_deck_from_discard(room_id, room)
+                if deck:
+                    opp_hand.append(deck.pop(0))
             db_query("UPDATE room_players SET hand = %s WHERE user_id = %s", (json.dumps(opp_hand), opp_id), commit=True)
             db_query("UPDATE rooms SET deck = %s, turn_index = %s, current_color = 'ANY' WHERE room_id = %s", (json.dumps(deck), p_idx, room_id), commit=True)
-            await c.bot.send_message(opp_id, "✅ قبلت السحب! سحبت 4 ورقات.")
-            await c.bot.send_message(user_id, "✅ خصمك قبل السحب! دورك الآن ويمكنك لعب أي لون.")
+            await send_message_then_delete(c.bot, opp_id, "✅ قبلت السحب! سحبت 4 ورقات.", delete_after_seconds=5)
+            await send_message_then_delete(c.bot, user_id, "✅ خصمك قبل السحب! دورك الآن ويمكنك لعب أي لون.", delete_after_seconds=5)
         else:
             p_hand = safe_load(players[p_idx]['hand'])
             prev_top_card = pending.get('prev_top_card', room['top_card'])
@@ -1234,19 +1263,27 @@ async def handle_challenge_decision(c: types.CallbackQuery):
                     break
             if cheated:
                 for _ in range(6):
-                    if deck: p_hand.append(deck.pop(0))
+                    if not deck:
+                        room = db_query("SELECT * FROM rooms WHERE room_id = %s", (room_id,))[0]
+                        deck = ensure_deck_from_discard(room_id, room)
+                    if deck:
+                        p_hand.append(deck.pop(0))
                 db_query("UPDATE room_players SET hand = %s WHERE user_id = %s", (json.dumps(p_hand), user_id), commit=True)
                 db_query("UPDATE rooms SET deck = %s, turn_index = %s WHERE room_id = %s", (json.dumps(deck), opp_idx, room_id), commit=True)
-                await c.bot.send_message(user_id, "🕵️‍♂️ كشف الغش! سحبت 6 أوراق عقوبة والخصم يأخذ الدور!")
-                await c.bot.send_message(opp_id, "✅ نجح التحدي! الخصم كان لديه ورقة مناسبة غير الجوكر.")
+                await send_message_then_delete(c.bot, user_id, "🕵️‍♂️ كشف الغش! سحبت 6 أوراق عقوبة والخصم يأخذ الدور!", delete_after_seconds=5)
+                await send_message_then_delete(c.bot, opp_id, "✅ نجح التحدي! الخصم كان لديه ورقة مناسبة غير الجوكر.", delete_after_seconds=5)
             else:
                 opp_hand = safe_load(players[opp_idx]['hand'])
                 for _ in range(6):
-                    if deck: opp_hand.append(deck.pop(0))
+                    if not deck:
+                        room = db_query("SELECT * FROM rooms WHERE room_id = %s", (room_id,))[0]
+                        deck = ensure_deck_from_discard(room_id, room)
+                    if deck:
+                        opp_hand.append(deck.pop(0))
                 db_query("UPDATE room_players SET hand = %s WHERE user_id = %s", (json.dumps(opp_hand), opp_id), commit=True)
                 db_query("UPDATE rooms SET deck = %s, turn_index = %s, current_color = 'ANY' WHERE room_id = %s", (json.dumps(deck), p_idx, room_id), commit=True)
-                await c.bot.send_message(opp_id, "❌ فشل التحدي! أنت تسحب 6 أوراق.")
-                await c.bot.send_message(user_id, "🎯 الخصم فشل في التحدي – العب بأي لون.")
+                await send_message_then_delete(c.bot, opp_id, "❌ فشل التحدي! أنت تسحب 6 أوراق.", delete_after_seconds=5)
+                await send_message_then_delete(c.bot, user_id, "🎯 الخصم فشل في التحدي – العب بأي لون.", delete_after_seconds=5)
 
         try: await c.message.delete()
         except: pass
@@ -1290,10 +1327,14 @@ async def handle_catch(c: types.CallbackQuery):
         p_name = me.get('player_name') if me else "لاعب"
         opp_name = opp.get('player_name') or "لاعب"
         if len(opp_h) == 1 and not str(opp.get('said_uno')).lower() in ['true', '1']:
-            room_data = db_query("SELECT deck FROM rooms WHERE room_id = %s", (room_id,))[0]
-            deck = safe_load(room_data['deck'])
+            room_data = db_query("SELECT * FROM rooms WHERE room_id = %s", (room_id,))[0]
+            deck = ensure_deck_from_discard(room_id, room_data)
             for _ in range(2):
-                if deck: opp_h.append(deck.pop(0))
+                if not deck:
+                    room_data = db_query("SELECT * FROM rooms WHERE room_id = %s", (room_id,))[0]
+                    deck = ensure_deck_from_discard(room_id, room_data)
+                if deck:
+                    opp_h.append(deck.pop(0))
             db_query("UPDATE room_players SET hand = %s WHERE user_id = %s", (json.dumps(opp_h), opp['user_id']), commit=True)
             db_query("UPDATE rooms SET deck = %s WHERE room_id = %s", (json.dumps(deck), room_id), commit=True)
             await c.answer()
@@ -1392,13 +1433,16 @@ async def handle_challenge(c: types.CallbackQuery):
         players = get_ordered_players(room_id)
         p_idx = room['turn_index']          # اللاعب الحالي (الذي لعب +4)
         opp_idx = (p_idx + 1) % 2
-        deck = safe_load(room['deck'])
+        deck = ensure_deck_from_discard(room_id, room)
         alerts = {}
 
         if decision == "n":
             # الخصم قبل السحب
             opp_h = safe_load(players[opp_idx]['hand'])
             for _ in range(4):
+                if not deck:
+                    room = db_query("SELECT * FROM rooms WHERE room_id = %s", (room_id,))[0]
+                    deck = ensure_deck_from_discard(room_id, room)
                 if deck:
                     opp_h.append(deck.pop(0))
             db_query("UPDATE room_players SET hand = %s WHERE user_id = %s",
@@ -1429,6 +1473,9 @@ async def handle_challenge(c: types.CallbackQuery):
             if cheated:
                 # اللاعب غش → يسحب 6 ورقات والدور يذهب للخصم
                 for _ in range(6):
+                    if not deck:
+                        room = db_query("SELECT * FROM rooms WHERE room_id = %s", (room_id,))[0]
+                        deck = ensure_deck_from_discard(room_id, room)
                     if deck:
                         p_hand.append(deck.pop(0))
                 db_query("UPDATE room_players SET hand = %s WHERE user_id = %s",
@@ -1440,6 +1487,9 @@ async def handle_challenge(c: types.CallbackQuery):
                 # اللاعب لم يغش → الخصم يسحب 6 ورقات والدور يبقى للاعب
                 opp_h = safe_load(players[opp_idx]['hand'])
                 for _ in range(6):
+                    if not deck:
+                        room = db_query("SELECT * FROM rooms WHERE room_id = %s", (room_id,))[0]
+                        deck = ensure_deck_from_discard(room_id, room)
                     if deck:
                         opp_h.append(deck.pop(0))
                 db_query("UPDATE room_players SET hand = %s WHERE user_id = %s",
