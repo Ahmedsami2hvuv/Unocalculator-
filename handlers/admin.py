@@ -107,14 +107,14 @@ async def admin_back(c: types.CallbackQuery, state: FSMContext):
     await c.answer()
 
 
-# --- اذاعة بث ---
+# --- اذاعة بث (نص، صورة، فيديو، ملف، أي وسائط) ---
 @router.callback_query(F.data == "admin_broadcast")
 async def admin_broadcast_start(c: types.CallbackQuery, state: FSMContext):
     if not _admin_only(c):
         return await c.answer("⛔ غير مسموح.", show_alert=True)
     await state.set_state(AdminStates.broadcast_text)
     await c.message.edit_text(
-        "📢 **اذاعة بث**\n\nأرسل النص الذي تريد إرساله لجميع اللاعبين المسجلين.\nلإلغاء أرسل: /cancel",
+        "📢 **اذاعة بث**\n\nأرسل **أي شيء** تريد إرساله للجميع:\n• نص\n• صورة\n• فيديو\n• ملف (مستند)\n• صوت\n• صوتية\n\nلإلغاء أرسل: /cancel",
         parse_mode="Markdown")
     await c.answer()
 
@@ -156,8 +156,34 @@ def _admin_broadcast_done_kb():
     ])
 
 
+def _broadcast_caption():
+    return "📢 اذاعة من الإدارة"
+
+async def _send_broadcast_to_user(bot, uid: int, message: types.Message, text: str):
+    """يرسل نفس نوع الرسالة (نص/صورة/فيديو/ملف...) للمستخدم uid."""
+    try:
+        if message.photo:
+            cap = (message.caption or "").strip() or text or _broadcast_caption()
+            await bot.send_photo(int(uid), message.photo[-1].file_id, caption=cap)
+        elif message.video:
+            cap = (message.caption or "").strip() or text or _broadcast_caption()
+            await bot.send_video(int(uid), message.video.file_id, caption=cap)
+        elif message.document:
+            cap = (message.caption or "").strip() or text or _broadcast_caption()
+            await bot.send_document(int(uid), message.document.file_id, caption=cap)
+        elif message.audio:
+            cap = (message.caption or "").strip() or text or _broadcast_caption()
+            await bot.send_audio(int(uid), message.audio.file_id, caption=cap)
+        elif message.voice:
+            await bot.send_voice(int(uid), message.voice.file_id, caption=text or _broadcast_caption())
+        else:
+            await bot.send_message(int(uid), f"📢 اذاعة من الإدارة:\n\n{text or '(بدون نص)'}")
+        return True
+    except Exception:
+        return False
+
 @router.message(AdminStates.broadcast_text, F.text)
-async def admin_broadcast_send(message: types.Message, state: FSMContext):
+async def admin_broadcast_send_text(message: types.Message, state: FSMContext):
     if not is_admin(message.from_user.id):
         return
     if message.text and message.text.strip() == "/cancel":
@@ -188,6 +214,39 @@ async def admin_broadcast_send(message: types.Message, state: FSMContext):
         await state.clear()
         await message.answer(
             f"✅ تم إرسال الإذاعة إلى {sent}/{total} لاعب.",
+            reply_markup=_admin_broadcast_done_kb()
+        )
+    except Exception as e:
+        await state.clear()
+        await message.answer(f"❌ خطأ: {e}", reply_markup=_admin_broadcast_done_kb())
+
+
+@router.message(AdminStates.broadcast_text, F.photo | F.video | F.document | F.audio | F.voice)
+async def admin_broadcast_send_media(message: types.Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    text = (message.caption or message.text or "").strip() or _broadcast_caption()
+    try:
+        raw_rows = db_query("SELECT user_id FROM users WHERE user_id IS NOT NULL")
+        rows = list(raw_rows) if raw_rows else []
+        if not rows:
+            await state.clear()
+            await message.answer("❌ لا يوجد لاعبون في القاعدة.", reply_markup=_admin_broadcast_done_kb())
+            return
+        total = len(rows)
+        sent = 0
+        import logging
+        log = logging.getLogger(__name__)
+        for r in rows:
+            uid = _row_user_id(r)
+            if not uid:
+                log.warning("Broadcast: could not get user_id from row type=%s row=%s", type(r).__name__, r)
+                continue
+            if await _send_broadcast_to_user(message.bot, uid, message, text):
+                sent += 1
+        await state.clear()
+        await message.answer(
+            f"✅ تم إرسال الإذاعة (وسائط) إلى {sent}/{total} لاعب.",
             reply_markup=_admin_broadcast_done_kb()
         )
     except Exception as e:
