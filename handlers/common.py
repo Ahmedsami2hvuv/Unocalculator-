@@ -3343,11 +3343,15 @@ def _get_player_name_for_post(user_id: int, full_name: str = None) -> str:
     return name
 
 
-async def _publish_media_to_channel(bot, message: types.Message, name: str, channel_id: str = None) -> bool:
+async def _publish_media_to_channel(bot, message: types.Message, name: str, channel_id=None) -> bool:
     """ينشر محتوى الرسالة (نص/صورة/صوت/...) في قناة النشر. يُرجع True عند النجاح."""
-    ch = channel_id or PUBLISH_CHANNEL_ID
-    if not ch:
+    raw = channel_id or PUBLISH_CHANNEL_ID
+    if not raw:
         return False
+    try:
+        ch = int(raw)
+    except (TypeError, ValueError):
+        ch = raw
     cap = f"👤 **{name}**\n\n{(message.caption or '').strip()}" if (message.caption or "").strip() else f"👤 **{name}**"
     if cap.endswith("\n\n"):
         cap = cap.rstrip()
@@ -3399,15 +3403,21 @@ async def player_post_receive_text(message: types.Message, state: FSMContext):
         return await message.answer(f"⛔ {reason}")
     name = _get_player_name_for_post(message.from_user.id, message.from_user.full_name)
     try:
+        ch_id = int(PUBLISH_CHANNEL_ID) if PUBLISH_CHANNEL_ID else None
+        if not ch_id:
+            return await message.answer("⚠️ نشر المنشورات غير متاح حالياً.")
         await message.bot.send_message(
-            chat_id=PUBLISH_CHANNEL_ID,
+            chat_id=ch_id,
             text=f"👤 **{name}**\n\n{text}",
             parse_mode="Markdown"
         )
         await message.answer("✅ تم نشر منشورك في القناة.")
     except Exception as e:
         print(f"[player_post] {e}")
-        await message.answer("❌ فشل النشر. تحقق من إعدادات القناة.")
+        await message.answer(
+            "❌ فشل النشر.\n\n"
+            "تأكد أن البوت مضاف في القناة كـ **مسؤول** وله صلاحية «نشر رسائل» (Post messages)."
+        )
 
 
 @router.message(PlayerPostStates.waiting_message, F.photo | F.voice | F.video | F.animation | F.sticker | F.document | F.audio | F.video_note)
@@ -3425,7 +3435,10 @@ async def player_post_receive_media(message: types.Message, state: FSMContext):
     if await _publish_media_to_channel(message.bot, message, name):
         await message.answer("✅ تم نشر منشورك في القناة.")
     else:
-        await message.answer("❌ فشل النشر. تحقق من إعدادات القناة.")
+        await message.answer(
+            "❌ فشل النشر.\n\n"
+            "تأكد أن البوت مضاف في القناة كـ **مسؤول** وله صلاحية «نشر رسائل» (Post messages)."
+        )
 
 
 @router.message(PlayerPostStates.waiting_message)
