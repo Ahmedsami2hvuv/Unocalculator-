@@ -445,9 +445,18 @@ class FilterInRoom(BaseFilter):
         return get_user_current_room(message.from_user.id) is not None
 
 
+async def _delete_message_after(bot, chat_id: int, message_id: int, seconds: int = 10):
+    """حذف رسالة بعد ثوانٍ بدون تنبيه."""
+    await asyncio.sleep(seconds)
+    try:
+        await bot.delete_message(chat_id, message_id)
+    except Exception:
+        pass
+
+
 @router.message(F.text, FilterInRoom())
 async def room_chat_broadcast(message: types.Message):
-    """نظام محادثة الغرفة: أي رسالة من لاعب داخل الغرفة تُذاع للباقين بصيغة (اسم اللاعب) ثم (الرسالة) في رسالة واحدة."""
+    """نظام محادثة الغرفة: أي رسالة من لاعب داخل الغرفة تُذاع للباقين وتُحذف تلقائياً بعد 10 ثوانٍ."""
     if not message.text or (message.text.strip().startswith("/") and message.text.strip().lower() != "/start"):
         return
     info = get_user_current_room(message.from_user.id)
@@ -464,15 +473,16 @@ async def room_chat_broadcast(message: types.Message):
     text = (message.text or "").strip()
     if not text:
         return
-    # رسالة واحدة: اسم اللاعب (بالأونو) ثم الرسالة
     chat_msg = f"👤 {sender_name}\n\n{text}"
     for p in players:
         if p["user_id"] == message.from_user.id:
             continue
         try:
-            await message.bot.send_message(p["user_id"], chat_msg)
+            sent = await message.bot.send_message(p["user_id"], chat_msg)
+            asyncio.create_task(_delete_message_after(message.bot, p["user_id"], sent.message_id, 10))
         except Exception:
             pass
+    asyncio.create_task(_delete_message_after(message.bot, message.chat.id, message.message_id, 10))
 
 
 def generate_room_code():
