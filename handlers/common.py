@@ -59,8 +59,13 @@ async def channel_subscribe_message_middleware(handler, event: types.Message, da
     user_id = event.from_user.id if event.from_user else None
     if not user_id:
         return await handler(event, data)
-    # إذا الرسالة /start مع رابط انضمام لغرفة: نحفظ الكود قبل عرض اشتراك القناة حتى لا يضيع
     text = (event.text or "").strip()
+    # روابط من منشورات القناة: نسمح بالمرور دون اشتراك (بروفايل، لايك، add)
+    if text.startswith("/start") and len(text) > 7:
+        payload = text.split(maxsplit=1)[1] if " " in text else ""
+        if payload.startswith("profile_") or payload.startswith("add_") or payload.startswith("like_"):
+            return await handler(event, data)
+    # إذا الرسالة /start مع رابط انضمام لغرفة: نحفظ الكود قبل عرض اشتراك القناة حتى لا يضيع
     if text.startswith("/start") and "join_" in text:
         parts = text.split(maxsplit=1)
         if len(parts) >= 2 and parts[1].startswith("join_"):
@@ -3658,6 +3663,12 @@ async def player_post_receive_text(message: types.Message, state: FSMContext):
         except Exception as e:
             print(f"[player_post] create_room: {e}")
     reply_kb = _channel_post_buttons(uid, add_profile, join_code)
+    if (add_profile or join_code) and not reply_kb:
+        await message.answer(
+            "⚠️ تم ضبط الخيارات لكن **BOT_USERNAME** غير مضبوط، فالأزرار (حساب اللاعب، العب معي، لايك) لن تظهر.\n\n"
+            "اضبط BOT_USERNAME في Variables أو في channel_config ثم أعد المحاولة."
+        )
+        return
     sent_msg_id = None
     try:
         sent = await message.bot.send_message(
@@ -3704,10 +3715,10 @@ async def player_post_receive_text(message: types.Message, state: FSMContext):
         ch_user = PUBLISH_CHANNEL_USERNAME.lstrip("@")
         kb_after.append([InlineKeyboardButton(text="📢 الذهاب للقناة", url=f"https://t.me/{ch_user}")])
     kb_after.append([InlineKeyboardButton(text="🔙 رجوع للقائمة الرئيسية", callback_data="home")])
-    await message.answer(
-        "✅ تم نشر منشورك في القناة.",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_after)
-    )
+    msg = "✅ تم نشر منشورك في القناة."
+    if not reply_kb and (add_profile or join_code):
+        msg += "\n\n⚠️ لم تظهر الأزرار لأن BOT_USERNAME غير مضبوط. اضبطه في الإعدادات لنشرات لاحقة."
+    await message.answer(msg, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_after))
 
 
 @router.message(PlayerPostStates.waiting_message, F.photo | F.voice | F.video | F.animation | F.sticker | F.document | F.audio | F.video_note)
