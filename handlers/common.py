@@ -2068,10 +2068,7 @@ async def gameend_back_to_list(c: types.CallbackQuery):
 async def share_result_to_channel(c: types.CallbackQuery):
     """نشر نتيجة الفوز في قناة النشر (قناة واحدة) مع زر إضافة اللاعب."""
     if not PUBLISH_CHANNEL_ID or not BOT_USERNAME:
-        return await c.answer(
-            "⚠️ نشر النتائج غير مفعّل.\n\nلتفعيله: في channel_config.py ضَع PUBLISH_CHANNEL_ID و BOT_USERNAME (معرف البوت بدون @).",
-            show_alert=True
-        )
+        return await c.answer("⚠️ نشر النتائج غير متاح حالياً. سيتم تفعيله من الإدارة لاحقاً.", show_alert=True)
     replay_id = c.data.replace("share_result_", "").strip()
     rdata = replay_data.get(replay_id)
     if not rdata:
@@ -3317,10 +3314,7 @@ async def reject_game_invite(c: types.CallbackQuery):
 async def player_post_start(c: types.CallbackQuery, state: FSMContext):
     """بدء نشر منشور في قناة النشر (قناة واحدة)."""
     if not PUBLISH_CHANNEL_ID:
-        return await c.answer(
-            "⚠️ نشر المنشورات غير مفعّل.\n\nلتفعيله: أنشئ channel_config.py وضَع فيه PUBLISH_CHANNEL_ID (معرف القناة، يمكن الحصول عليه بأمر /channel_id يوزر_القناة).",
-            show_alert=True
-        )
+        return await c.answer("⚠️ نشر المنشورات غير متاح حالياً. سيتم تفعيله من الإدارة لاحقاً.", show_alert=True)
     await state.set_state(PlayerPostStates.waiting_message)
     await c.message.edit_text(
         "📢 **نشر منشور**\n\nأرسل النص أو الصور أو الصوت أو الفيديو أو الملصقات أو أي ميديا للنشر في القناة.\n\n⚠️ لا يُسمح بنشر أرقام هواتف أو كلمات تخالف المعايير.",
@@ -3335,10 +3329,7 @@ async def player_posts_channel_link(c: types.CallbackQuery):
     if PUBLISH_CHANNEL_USERNAME:
         await c.answer()
         return
-    await c.answer(
-        "📜 القناة غير مُعدّة.\n\nلتفعيلها: أنشئ ملف channel_config.py من channel_config.example.py وضَع فيه PUBLISH_CHANNEL_USERNAME (يوزر القناة بدون @).",
-        show_alert=True
-    )
+    await c.answer("📜 القناة غير متاحة حالياً. سيتم تفعيلها من الإدارة لاحقاً.", show_alert=True)
 
 
 def _get_player_name_for_post(user_id: int, full_name: str = None) -> str:
@@ -3401,7 +3392,7 @@ async def player_post_receive_text(message: types.Message, state: FSMContext):
     """استقبال منشور نصي والتحقق ثم النشر في قناة النشر."""
     await state.clear()
     if not PUBLISH_CHANNEL_ID:
-        return await message.answer("⚠️ نشر المنشورات غير مفعّل.")
+        return await message.answer("⚠️ نشر المنشورات غير متاح حالياً.")
     text = (message.text or "").strip()
     ok, reason = check_post_content(text)
     if not ok:
@@ -3424,7 +3415,7 @@ async def player_post_receive_media(message: types.Message, state: FSMContext):
     """استقبال منشور ميديا (صورة، صوت، فيديو، ملصق، ...) والتحقق من التسمية ثم النشر."""
     await state.clear()
     if not PUBLISH_CHANNEL_ID:
-        return await message.answer("⚠️ نشر المنشورات غير مفعّل.")
+        return await message.answer("⚠️ نشر المنشورات غير متاح حالياً.")
     caption_text = (message.caption or "").strip()
     if caption_text:
         ok, reason = check_post_content(caption_text)
