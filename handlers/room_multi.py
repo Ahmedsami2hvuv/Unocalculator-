@@ -864,8 +864,7 @@ async def confirm_leave_multi(c: types.CallbackQuery):
     else:
         all_players_before = players + [{'user_id': c.from_user.id, 'player_name': leave_name}]
         from handlers.common import create_replay_session, build_game_end_keyboard
-        winner_id = remaining_players[0]['user_id'] if remaining_players else None
-        replay_id = create_replay_session(all_players_before, room, 'multi', "انتهت اللعبة", winner_id=winner_id)
+        replay_id = create_replay_session(all_players_before, room, 'multi', "انتهت اللعبة")
         end_kb_me = build_game_end_keyboard(replay_id, c.from_user.id)
         await c.bot.send_message(c.from_user.id, f"🚪 انسحبت من اللعبة.", reply_markup=end_kb_me)
         if remaining_players:
