@@ -634,10 +634,6 @@ async def cmd_start_with_deeplink(message: types.Message, state: FSMContext):
             welcome = t(uid, "welcome_new") + "\n\n" + t(uid, "invite_pending_room")
             await message.answer(welcome, reply_markup=kb)
             return
-    try:
-        await message.delete()
-    except Exception:
-        pass
     uid = message.from_user.id
     try:
         db_query("UPDATE users SET username = %s WHERE user_id = %s", (message.from_user.username or "", uid), commit=True)
@@ -673,16 +669,23 @@ async def cmd_start_with_deeplink(message: types.Message, state: FSMContext):
 
 @router.message(F.text == "ستارت")
 async def quick_start_button(message: types.Message, state: FSMContext):
-    try:
-        await message.delete()
-    except Exception:
-        pass
+    """نفس سلوك /start وزر التنظيف: عرض القائمة فوراً بدون حذف الرسالة (لتجنب التأخير)."""
     uid = message.from_user.id
     try:
         db_query("UPDATE users SET username = %s WHERE user_id = %s", (message.from_user.username or "", uid), commit=True)
     except Exception:
         pass
     user = db_query("SELECT * FROM users WHERE user_id = %s", (uid,))
+    if not user:
+        try:
+            db_query(
+                "INSERT INTO users (user_id, username, is_registered) VALUES (%s, %s, FALSE) ON CONFLICT (user_id) DO NOTHING",
+                (uid, message.from_user.username or ""),
+                commit=True,
+            )
+        except Exception:
+            pass
+        user = db_query("SELECT * FROM users WHERE user_id = %s", (uid,))
     if user and user[0].get("logged_out") in (True, 1, "t", "true"):
         kb = InlineKeyboardMarkup(
             inline_keyboard=[
