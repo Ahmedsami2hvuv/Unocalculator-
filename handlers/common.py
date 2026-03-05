@@ -556,10 +556,50 @@ async def send_message_then_delete(bot, chat_id: int, text: str, delete_after_se
         return None
 
 
-@router.message(F.text, FilterInRoom())
+async def _send_media_copy(bot, chat_id: int, message: types.Message, sender_name: str):
+    """إعادة إرسال نسخة من الرسالة (نص/صورة/صوت/فيديو/ملصق/...) مع توقيع المرسل. يُرجع message_id أو None."""
+    cap = f"👤 {sender_name}\n\n{(message.caption or '').strip()}"
+    if cap.endswith("\n\n"):
+        cap = cap.rstrip()
+    try:
+        if message.text:
+            sent = await bot.send_message(chat_id, f"👤 {sender_name}\n\n{message.text}")
+            return sent.message_id
+        if message.photo:
+            sent = await bot.send_photo(chat_id, message.photo[-1].file_id, caption=cap or None)
+            return sent.message_id
+        if message.voice:
+            sent = await bot.send_voice(chat_id, message.voice.file_id, caption=cap or None)
+            return sent.message_id
+        if message.video:
+            sent = await bot.send_video(chat_id, message.video.file_id, caption=cap or None)
+            return sent.message_id
+        if message.animation:
+            sent = await bot.send_animation(chat_id, message.animation.file_id, caption=cap or None)
+            return sent.message_id
+        if message.sticker:
+            sent = await bot.send_sticker(chat_id, message.sticker.file_id)
+            return sent.message_id
+        if message.document:
+            sent = await bot.send_document(chat_id, message.document.file_id, caption=cap or None)
+            return sent.message_id
+        if message.audio:
+            sent = await bot.send_audio(chat_id, message.audio.file_id, caption=cap or None)
+            return sent.message_id
+        if message.video_note:
+            sent = await bot.send_video_note(chat_id, message.video_note.file_id)
+            return sent.message_id
+    except Exception:
+        pass
+    return None
+
+
+@router.message(FilterInRoom())
 async def room_chat_broadcast(message: types.Message):
-    """نظام محادثة الغرفة: أي رسالة من لاعب داخل الغرفة تُذاع للباقين وتُحذف تلقائياً بعد 10 ثوانٍ."""
-    if not message.text or (message.text.strip().startswith("/") and message.text.strip().lower() != "/start"):
+    """نظام محادثة الغرفة: أي رسالة (نص، صورة، صوت، فيديو، ملصق، ...) من لاعب داخل الغرفة تُذاع للباقين وتُحذف بعد 10 ثوانٍ."""
+    if message.text and (message.text.strip().startswith("/") and message.text.strip().lower() != "/start"):
+        return
+    if not message.text and not message.photo and not message.voice and not message.video and not message.animation and not message.sticker and not message.document and not message.audio and not message.video_note:
         return
     info = get_user_current_room(message.from_user.id)
     if not info:
@@ -572,16 +612,13 @@ async def room_chat_broadcast(message: types.Message):
             break
     if not sender_name:
         sender_name = message.from_user.full_name or "لاعب"
-    text = (message.text or "").strip()
-    if not text:
-        return
-    chat_msg = f"👤 {sender_name}\n\n{text}"
     for p in players:
         if p["user_id"] == message.from_user.id:
             continue
         try:
-            sent = await message.bot.send_message(p["user_id"], chat_msg)
-            asyncio.create_task(_delete_message_after(message.bot, p["user_id"], sent.message_id, 10))
+            mid = await _send_media_copy(message.bot, p["user_id"], message, sender_name)
+            if mid:
+                asyncio.create_task(_delete_message_after(message.bot, p["user_id"], mid, 10))
         except Exception:
             pass
     asyncio.create_task(_delete_message_after(message.bot, message.chat.id, message.message_id, 10))
@@ -3263,7 +3300,7 @@ async def player_post_start(c: types.CallbackQuery, state: FSMContext):
         return await c.answer("⚠️ نشر المنشورات غير مفعّل حالياً.", show_alert=True)
     await state.set_state(PlayerPostStates.waiting_message)
     await c.message.edit_text(
-        "📢 **نشر منشور**\n\nأرسل الرسالة التي تريد نشرها في القناة.\n\n⚠️ لا يُسمح بنشر أرقام هواتف أو كلمات تخالف المعايير.",
+        "📢 **نشر منشور**\n\nأرسل النص أو الصور أو الصوت أو الفيديو أو الملصقات أو أي ميديا للنشر في القناة.\n\n⚠️ لا يُسمح بنشر أرقام هواتف أو كلمات تخالف المعايير.",
         parse_mode="Markdown"
     )
     await c.answer()
@@ -3278,9 +3315,64 @@ async def player_posts_channel_link(c: types.CallbackQuery):
     await c.answer("📜 القناة غير مُعدّة بعد. تواصل مع الإدارة.", show_alert=True)
 
 
+def _get_player_name_for_post(user_id: int, full_name: str = None) -> str:
+    name = "لاعب"
+    try:
+        row = db_query("SELECT player_name FROM users WHERE user_id = %s", (user_id,))
+        if row:
+            name = row[0].get("player_name") or full_name or name
+    except Exception:
+        name = full_name or name
+    return name
+
+
+async def _publish_media_to_channel(bot, message: types.Message, name: str, channel_id: str = None) -> bool:
+    """ينشر محتوى الرسالة (نص/صورة/صوت/...) في قناة النشر. يُرجع True عند النجاح."""
+    ch = channel_id or PUBLISH_CHANNEL_ID
+    if not ch:
+        return False
+    cap = f"👤 **{name}**\n\n{(message.caption or '').strip()}" if (message.caption or "").strip() else f"👤 **{name}**"
+    if cap.endswith("\n\n"):
+        cap = cap.rstrip()
+    try:
+        if message.text:
+            await bot.send_message(ch, f"👤 **{name}**\n\n{message.text}", parse_mode="Markdown")
+            return True
+        if message.photo:
+            await bot.send_photo(ch, message.photo[-1].file_id, caption=cap, parse_mode="Markdown")
+            return True
+        if message.voice:
+            await bot.send_voice(ch, message.voice.file_id, caption=cap, parse_mode="Markdown")
+            return True
+        if message.video:
+            await bot.send_video(ch, message.video.file_id, caption=cap, parse_mode="Markdown")
+            return True
+        if message.animation:
+            await bot.send_animation(ch, message.animation.file_id, caption=cap, parse_mode="Markdown")
+            return True
+        if message.sticker:
+            await bot.send_sticker(ch, message.sticker.file_id)
+            await bot.send_message(ch, f"👤 **{name}**", parse_mode="Markdown")
+            return True
+        if message.document:
+            await bot.send_document(ch, message.document.file_id, caption=cap, parse_mode="Markdown")
+            return True
+        if message.audio:
+            await bot.send_audio(ch, message.audio.file_id, caption=cap, parse_mode="Markdown")
+            return True
+        if message.video_note:
+            await bot.send_video_note(ch, message.video_note.file_id)
+            await bot.send_message(ch, f"👤 **{name}**", parse_mode="Markdown")
+            return True
+    except Exception as e:
+        print(f"[player_post] {e}")
+        return False
+    return False
+
+
 @router.message(PlayerPostStates.waiting_message, F.text)
-async def player_post_receive_message(message: types.Message, state: FSMContext):
-    """استقبال رسالة المنشور والتحقق ثم النشر في قناة النشر."""
+async def player_post_receive_text(message: types.Message, state: FSMContext):
+    """استقبال منشور نصي والتحقق ثم النشر في قناة النشر."""
     await state.clear()
     if not PUBLISH_CHANNEL_ID:
         return await message.answer("⚠️ نشر المنشورات غير مفعّل.")
@@ -3288,18 +3380,11 @@ async def player_post_receive_message(message: types.Message, state: FSMContext)
     ok, reason = check_post_content(text)
     if not ok:
         return await message.answer(f"⛔ {reason}")
-    name = "لاعب"
-    try:
-        row = db_query("SELECT player_name FROM users WHERE user_id = %s", (message.from_user.id,))
-        if row:
-            name = row[0].get("player_name") or message.from_user.full_name or name
-    except Exception:
-        name = message.from_user.full_name or name
-    post_text = f"👤 **{name}**\n\n{text}"
+    name = _get_player_name_for_post(message.from_user.id, message.from_user.full_name)
     try:
         await message.bot.send_message(
             chat_id=PUBLISH_CHANNEL_ID,
-            text=post_text,
+            text=f"👤 **{name}**\n\n{text}",
             parse_mode="Markdown"
         )
         await message.answer("✅ تم نشر منشورك في القناة.")
@@ -3308,11 +3393,29 @@ async def player_post_receive_message(message: types.Message, state: FSMContext)
         await message.answer("❌ فشل النشر. تحقق من إعدادات القناة.")
 
 
-@router.message(PlayerPostStates.waiting_message)
-async def player_post_cancel_non_text(message: types.Message, state: FSMContext):
-    """إلغاء إذا أرسل غير نص."""
+@router.message(PlayerPostStates.waiting_message, F.photo | F.voice | F.video | F.animation | F.sticker | F.document | F.audio | F.video_note)
+async def player_post_receive_media(message: types.Message, state: FSMContext):
+    """استقبال منشور ميديا (صورة، صوت، فيديو، ملصق، ...) والتحقق من التسمية ثم النشر."""
     await state.clear()
-    await message.answer("⚠️ يُقبل النص فقط. أرسل رسالة نصية أو اضغط «القائمة الرئيسية».")
+    if not PUBLISH_CHANNEL_ID:
+        return await message.answer("⚠️ نشر المنشورات غير مفعّل.")
+    caption_text = (message.caption or "").strip()
+    if caption_text:
+        ok, reason = check_post_content(caption_text)
+        if not ok:
+            return await message.answer(f"⛔ {reason}")
+    name = _get_player_name_for_post(message.from_user.id, message.from_user.full_name)
+    if await _publish_media_to_channel(message.bot, message, name):
+        await message.answer("✅ تم نشر منشورك في القناة.")
+    else:
+        await message.answer("❌ فشل النشر. تحقق من إعدادات القناة.")
+
+
+@router.message(PlayerPostStates.waiting_message)
+async def player_post_unsupported(message: types.Message, state: FSMContext):
+    """أي محتوى آخر غير النص أو الميديا المعروفة."""
+    await state.clear()
+    await message.answer("⚠️ يمكنك إرسال: نص، صورة، صوت، فيديو، صورة متحركة، ملصق، أو ملف. غير ذلك غير مدعوم.")
 
 
 @router.callback_query(F.data == "check_channel_sub")
