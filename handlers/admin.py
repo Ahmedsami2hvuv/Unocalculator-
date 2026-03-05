@@ -43,6 +43,33 @@ async def cmd_admin(message: types.Message, state: FSMContext):
     await _send_admin_menu(message, message.from_user.id)
 
 
+@router.message(Command("channel_id"), F.text)
+async def cmd_channel_id(message: types.Message):
+    """أمر للأدمن: يعرض آيدي القناة من يوزرها. الاستخدام: /channel_id uno1011 أو /channel_id @uno1011"""
+    if not is_admin(message.from_user.id):
+        return
+    text = (message.text or "").strip()
+    parts = text.split(maxsplit=1)
+    username = (parts[1] if len(parts) > 1 else "").strip().lstrip("@")
+    if not username:
+        await message.answer("📌 الاستخدام: `/channel_id uno1011` أو `/channel_id @uno1011`\n\nضع يوزر القناة بعد الأمر.", parse_mode="Markdown")
+        return
+    try:
+        chat = await message.bot.get_chat(f"@{username}")
+        cid = chat.id
+        title = getattr(chat, "title", "") or "—"
+        await message.answer(
+            f"🆔 **آيدي القناة**\n\n"
+            f"• اليوزر: `@{username}`\n"
+            f"• الآيدي: `{cid}`\n"
+            f"• الاسم: {title}\n\n"
+            f"استخدم في الإعدادات: `PUBLISH_CHANNEL_ID = {cid}` أو `{cid}`",
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        await message.answer(f"❌ لا يمكن جلب القناة. تأكد أن البوت داخل القناة أو أن القناة عامة.\n\nالتفاصيل: {e}")
+
+
 @router.callback_query(F.data == "admin_open_panel")
 async def admin_open_from_menu(c: types.CallbackQuery, state: FSMContext):
     if not _admin_only(c):
