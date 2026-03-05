@@ -16,17 +16,18 @@ router = Router()
 # --- اشتراك القناة (CHANNEL_ID) ---
 CHANNEL_ID = os.getenv("CHANNEL_ID", "").strip() or None  # مثال: @ko_kseb أو -100xxxx
 
-# --- قنوات النتائج والمنشورات (اختياري) ---
-RESULTS_CHANNEL_ID = os.getenv("RESULTS_CHANNEL_ID", "").strip() or None
-PLAYER_POSTS_CHANNEL_ID = os.getenv("PLAYER_POSTS_CHANNEL_ID", "").strip() or None
-PLAYER_POSTS_CHANNEL_USERNAME = os.getenv("PLAYER_POSTS_CHANNEL_USERNAME", "").strip() or None
+# --- قناة واحدة للنشر (النتائج + منشورات اللاعبين) ---
+PUBLISH_CHANNEL_ID = os.getenv("PUBLISH_CHANNEL_ID", "").strip() or None
+PUBLISH_CHANNEL_USERNAME = os.getenv("PUBLISH_CHANNEL_USERNAME", "").strip() or None
 BOT_USERNAME = os.getenv("BOT_USERNAME", "").strip() or None
 try:
     import channel_config as _cc
-    if getattr(_cc, "RESULTS_CHANNEL_ID", None): RESULTS_CHANNEL_ID = _cc.RESULTS_CHANNEL_ID
-    if getattr(_cc, "PLAYER_POSTS_CHANNEL_ID", None): PLAYER_POSTS_CHANNEL_ID = _cc.PLAYER_POSTS_CHANNEL_ID
-    if getattr(_cc, "PLAYER_POSTS_CHANNEL_USERNAME", None): PLAYER_POSTS_CHANNEL_USERNAME = _cc.PLAYER_POSTS_CHANNEL_USERNAME
-    if getattr(_cc, "BOT_USERNAME", None): BOT_USERNAME = _cc.BOT_USERNAME
+    if getattr(_cc, "PUBLISH_CHANNEL_ID", None):
+        PUBLISH_CHANNEL_ID = _cc.PUBLISH_CHANNEL_ID
+    if getattr(_cc, "PUBLISH_CHANNEL_USERNAME", None):
+        PUBLISH_CHANNEL_USERNAME = _cc.PUBLISH_CHANNEL_USERNAME
+    if getattr(_cc, "BOT_USERNAME", None):
+        BOT_USERNAME = _cc.BOT_USERNAME
 except Exception:
     pass
 
@@ -378,7 +379,7 @@ def build_game_end_keyboard(replay_id: str, for_user_id: int) -> InlineKeyboardM
             InlineKeyboardButton(text=btn_text, callback_data=cb)
         ])
     winner_id = rdata.get("winner_id")
-    if winner_id and for_user_id == winner_id and RESULTS_CHANNEL_ID and BOT_USERNAME:
+    if winner_id and for_user_id == winner_id and PUBLISH_CHANNEL_ID and BOT_USERNAME:
         kb.append([InlineKeyboardButton(text="📢 نشر النتيجة", callback_data=f"share_result_{replay_id}")])
     kb.append([InlineKeyboardButton(text="🔄 لعب مرة أخرى", callback_data=f"replay_{replay_id}")])
     kb.append([InlineKeyboardButton(text=t(for_user_id, "btn_home"), callback_data="home")])
@@ -407,6 +408,27 @@ def get_user_current_room(user_id: int):
         return None
     players = db_query("SELECT user_id, player_name FROM room_players WHERE room_id = %s", (room_id,))
     return (room_id, room[0], players or [])
+
+
+class RoomStates(StatesGroup):
+    wait_for_code = State()
+    # الحالات الجديدة للتسجيل المطور والترقية
+    reg_ask_username = State()
+    reg_ask_password = State()
+    reg_ask_name = State()
+    upgrade_username = State()
+    upgrade_password = State()
+    search_user = State()
+    # ابقينا القديمة لضمان عدم تعطل أي كود مرتبط بها حالياً
+    edit_name = State()
+    edit_username = State()
+    edit_password = State()
+    register_name = State()
+    register_password = State()
+    login_name = State()
+    login_password = State()
+    complete_profile_name = State()
+    complete_profile_password = State()
 
 
 class PlayerPostStates(StatesGroup):
@@ -449,10 +471,8 @@ def _contains_phone(text):
     if not text or not text.strip():
         return False
     digits_only = re.sub(r"\D", " ", text)
-    # تسلسل 10–11 رقم
     if re.search(r"\d{10,11}", digits_only):
         return True
-    # بداية 078 أو 077 أو 079
     if re.search(r"07[789]", text):
         return True
     return False
@@ -471,26 +491,6 @@ def check_post_content(text):
         return False, "رسالتك تنتهك معاييرنا (لا يُسمح بنشر أرقام هواتف)."
     return True, None
 
-
-class RoomStates(StatesGroup):
-    wait_for_code = State()
-    # الحالات الجديدة للتسجيل المطور والترقية
-    reg_ask_username = State()
-    reg_ask_password = State()
-    reg_ask_name = State()
-    upgrade_username = State()
-    upgrade_password = State()
-    search_user = State()
-    # ابقينا القديمة لضمان عدم تعطل أي كود مرتبط بها حالياً
-    edit_name = State()
-    edit_username = State()
-    edit_password = State()
-    register_name = State()
-    register_password = State()
-    login_name = State()
-    login_password = State()
-    complete_profile_name = State()
-    complete_profile_password = State()
 
 persistent_kb = ReplyKeyboardMarkup(
     keyboard=[[KeyboardButton(text="/start"), KeyboardButton(text="🧹 تنظيف الرسائل")]],
@@ -600,27 +600,9 @@ def _normalize_join_code(payload: str) -> str:
 
 @router.message(Command("start"))
 async def cmd_start_with_deeplink(message: types.Message, state: FSMContext):
-    """معالجة /start مع رابط الدعوة: /start join_ROOMCODE أو /start add_USERID"""
+    """معالجة /start مع رابط الدعوة: /start join_ROOMCODE"""
     text = (message.text or "").strip()
     parts = text.split(maxsplit=1)
-    if len(parts) >= 2 and parts[1].startswith("add_"):
-        try:
-            target_id = int(parts[1].replace("add_", "").strip())
-        except ValueError:
-            target_id = None
-        if target_id and message.from_user.id != target_id:
-            try:
-                uid = message.from_user.id
-                db_query("INSERT INTO users (user_id, username) VALUES (%s, %s) ON CONFLICT (user_id) DO NOTHING", (uid, message.from_user.username or ""), commit=True)
-                db_query("INSERT INTO follows (follower_id, following_id) VALUES (%s, %s)", (uid, target_id), commit=True)
-                row = db_query("SELECT player_name FROM users WHERE user_id = %s", (target_id,))
-                tname = (row[0]["player_name"] if row else None) or "اللاعب"
-                await message.answer(f"✅ تمت إضافة / متابعة **{tname}** بنجاح.", parse_mode="Markdown")
-            except Exception:
-                await message.answer("⚠️ أنت تتابع هذا اللاعب بالفعل أو حدث خطأ.")
-        else:
-            await message.answer("استخدم الرابط من منشور النتيجة في القناة لإضافة اللاعب.")
-        return
     if len(parts) >= 2 and parts[1].startswith("join_"):
         code = _normalize_join_code(parts[1])
         if code:
@@ -1820,10 +1802,10 @@ async def show_main_menu(message, name, user_id, cleanup=False, state=None, from
         return
     # 4. بناء الكيبورد
     posts_row = [InlineKeyboardButton(text="📢 نشر منشور", callback_data="player_post_start")]
-    if PLAYER_POSTS_CHANNEL_USERNAME:
-        posts_row.append(InlineKeyboardButton(text="📜 منشورات اللاعبين", url=f"https://t.me/{PLAYER_POSTS_CHANNEL_USERNAME.lstrip('@')}"))
+    if PUBLISH_CHANNEL_USERNAME:
+        posts_row.append(InlineKeyboardButton(text="📜 القناة", url=f"https://t.me/{PUBLISH_CHANNEL_USERNAME.lstrip('@')}"))
     else:
-        posts_row.append(InlineKeyboardButton(text="📜 منشورات اللاعبين", callback_data="player_posts_channel"))
+        posts_row.append(InlineKeyboardButton(text="📜 القناة", callback_data="player_posts_channel"))
     kb = [
         [InlineKeyboardButton(text=t(uid, "btn_random_play"), callback_data="random_play")],
         [InlineKeyboardButton(text=t(uid, "btn_play_friends"), callback_data="play_friends")],
@@ -2035,8 +2017,8 @@ async def gameend_back_to_list(c: types.CallbackQuery):
 
 @router.callback_query(F.data.startswith("share_result_"))
 async def share_result_to_channel(c: types.CallbackQuery):
-    """نشر نتيجة الفوز في قناة النتائج مع زر إضافة اللاعب."""
-    if not RESULTS_CHANNEL_ID or not BOT_USERNAME:
+    """نشر نتيجة الفوز في قناة النشر (قناة واحدة) مع زر إضافة اللاعب."""
+    if not PUBLISH_CHANNEL_ID or not BOT_USERNAME:
         return await c.answer("⚠️ نشر النتائج غير مفعّل حالياً.", show_alert=True)
     replay_id = c.data.replace("share_result_", "").strip()
     rdata = replay_data.get(replay_id)
@@ -2053,7 +2035,7 @@ async def share_result_to_channel(c: types.CallbackQuery):
     ])
     try:
         await c.bot.send_message(
-            chat_id=RESULTS_CHANNEL_ID,
+            chat_id=PUBLISH_CHANNEL_ID,
             text=f"{summary}\n\n👤 الفائز: {w_name}",
             reply_markup=kb,
             parse_mode="Markdown"
@@ -3281,12 +3263,12 @@ async def reject_game_invite(c: types.CallbackQuery):
 
 @router.callback_query(F.data == "player_post_start")
 async def player_post_start(c: types.CallbackQuery, state: FSMContext):
-    """بدء نشر منشور في قناة اللاعبين."""
-    if not PLAYER_POSTS_CHANNEL_ID:
+    """بدء نشر منشور في قناة النشر (قناة واحدة)."""
+    if not PUBLISH_CHANNEL_ID:
         return await c.answer("⚠️ نشر المنشورات غير مفعّل حالياً.", show_alert=True)
     await state.set_state(PlayerPostStates.waiting_message)
     await c.message.edit_text(
-        "📢 **نشر منشور**\n\nأرسل الرسالة التي تريد نشرها في قناة منشورات اللاعبين.\n\n⚠️ لا يُسمح بنشر أرقام هواتف أو كلمات تخالف المعايير.",
+        "📢 **نشر منشور**\n\nأرسل الرسالة التي تريد نشرها في القناة.\n\n⚠️ لا يُسمح بنشر أرقام هواتف أو كلمات تخالف المعايير.",
         parse_mode="Markdown"
     )
     await c.answer()
@@ -3294,18 +3276,18 @@ async def player_post_start(c: types.CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data == "player_posts_channel")
 async def player_posts_channel_link(c: types.CallbackQuery):
-    """عرض رابط قناة منشورات اللاعبين إذا لم يكن الزر برابط."""
-    if PLAYER_POSTS_CHANNEL_USERNAME:
+    """عرض رابط القناة إذا لم يكن الزر برابط."""
+    if PUBLISH_CHANNEL_USERNAME:
         await c.answer()
         return
-    await c.answer("📜 قناة منشورات اللاعبين غير مُعدّة بعد. تواصل مع الإدارة.", show_alert=True)
+    await c.answer("📜 القناة غير مُعدّة بعد. تواصل مع الإدارة.", show_alert=True)
 
 
 @router.message(PlayerPostStates.waiting_message, F.text)
 async def player_post_receive_message(message: types.Message, state: FSMContext):
-    """استقبال رسالة المنشور والتحقق ثم النشر."""
+    """استقبال رسالة المنشور والتحقق ثم النشر في قناة النشر."""
     await state.clear()
-    if not PLAYER_POSTS_CHANNEL_ID:
+    if not PUBLISH_CHANNEL_ID:
         return await message.answer("⚠️ نشر المنشورات غير مفعّل.")
     text = (message.text or "").strip()
     ok, reason = check_post_content(text)
@@ -3321,11 +3303,11 @@ async def player_post_receive_message(message: types.Message, state: FSMContext)
     post_text = f"👤 **{name}**\n\n{text}"
     try:
         await message.bot.send_message(
-            chat_id=PLAYER_POSTS_CHANNEL_ID,
+            chat_id=PUBLISH_CHANNEL_ID,
             text=post_text,
             parse_mode="Markdown"
         )
-        await message.answer("✅ تم نشر منشورك في قناة منشورات اللاعبين.")
+        await message.answer("✅ تم نشر منشورك في القناة.")
     except Exception as e:
         print(f"[player_post] {e}")
         await message.answer("❌ فشل النشر. تحقق من إعدادات القناة.")
