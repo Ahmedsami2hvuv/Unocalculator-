@@ -4,6 +4,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from database import db_query
 from config import IMG_UNO_SAFE_ME, IMG_UNO_SAFE_OPP, IMG_CATCH_SUCCESS, IMG_CATCH_PENALTY
+from handlers.common import send_message_then_delete
 import json, random, asyncio, uuid
 from collections import Counter
 
@@ -72,6 +73,21 @@ def sort_hand(hand):
         return (2, card)
     hand.sort(key=card_sort_key)
     return hand
+
+
+def ensure_deck_from_discard(room_id, room):
+    """إذا كومة السحب فارغة، خذ كل الأوراق النازلة واخلطها لتصبح كومة سحب جديدة. يُرجع قائمة deck."""
+    deck = safe_load(room.get('deck', '[]'))
+    if deck:
+        return deck
+    discard = safe_load(room.get('discard_pile', '[]'))
+    if not discard:
+        return []
+    new_deck = list(discard)
+    random.shuffle(new_deck)
+    db_query("UPDATE rooms SET deck = %s, discard_pile = '[]' WHERE room_id = %s", (json.dumps(new_deck), room_id), commit=True)
+    return new_deck
+
 
 countdown_msgs = {}
 challenge_timers = {}
@@ -151,15 +167,10 @@ async def turn_timeout_multi(room_id, bot, expected_turn):
         curr_p = players[curr_idx]
         p_name = curr_p.get('player_name') or "لاعب"
         curr_hand = safe_load(curr_p['hand'])
-        deck = safe_load(room['deck'])
+        deck = ensure_deck_from_discard(room_id, room)
         if not deck:
-            discard = safe_load(room['discard_pile'])
-            if discard:
-                deck = discard
-                random.shuffle(deck)
-                db_query("UPDATE rooms SET discard_pile = '[]' WHERE room_id = %s", (room_id,), commit=True)
-            else:
-                deck = generate_deck()
+            deck = generate_deck()
+            db_query("UPDATE rooms SET deck = %s WHERE room_id = %s", (json.dumps(deck), room_id), commit=True)
         new_card = deck.pop(0)
         curr_hand.append(new_card)
         next_turn = (curr_idx + direction) % num_players
@@ -267,7 +278,7 @@ async def color_timeout_multi(room_id, bot, user_id):
         direction = room.get('direction') or 1
         p_name = players[p_idx].get('player_name') or "لاعب"
         alerts = {}
-        deck = safe_load(room['deck'])
+        deck = ensure_deck_from_discard(room_id, room)
 
         if "🔥" in card:
             victim_idx = (p_idx + direction) % num_players
@@ -284,13 +295,8 @@ async def color_timeout_multi(room_id, bot, user_id):
             return
 
         if not deck:
-            discard = safe_load(room['discard_pile'])
-            if discard:
-                deck = discard
-                random.shuffle(deck)
-                db_query("UPDATE rooms SET discard_pile = '[]' WHERE room_id = %s", (room_id,), commit=True)
-            else:
-                deck = generate_deck()
+            deck = generate_deck()
+            db_query("UPDATE rooms SET deck = %s WHERE room_id = %s", (json.dumps(deck), room_id), commit=True)
 
         penalty = 1 if "💧" in card else (2 if "🌊" in card else 0)
         if penalty > 0:
@@ -299,7 +305,11 @@ async def color_timeout_multi(room_id, bot, user_id):
             v_name = victim.get('player_name') or "لاعب"
             v_hand = safe_load(victim['hand'])
             for _ in range(penalty):
-                if deck: v_hand.append(deck.pop(0))
+                if not deck:
+                    room = db_query("SELECT * FROM rooms WHERE room_id = %s", (room_id,))[0]
+                    deck = ensure_deck_from_discard(room_id, room)
+                if deck:
+                    v_hand.append(deck.pop(0))
             db_query("UPDATE room_players SET hand = %s WHERE user_id = %s", (json.dumps(v_hand), victim['user_id']), commit=True)
             next_turn = (p_idx + direction * 2) % num_players
             alerts[victim['user_id']] = f"🎨 تم اختيار اللون {chosen_color} تلقائياً وسحبت {penalty} ورقة!"
@@ -410,15 +420,10 @@ async def refresh_ui_multi(room_id, bot, alert_msg_dict=None):
         curr_hand = safe_load(curr_p['hand'])
 
         if not any(check_validity(c, room['top_card'], room['current_color']) for c in curr_hand):
-            deck = safe_load(room['deck'])
+            deck = ensure_deck_from_discard(room_id, room)
             if not deck:
-                discard = safe_load(room['discard_pile'])
-                if discard:
-                    deck = discard
-                    random.shuffle(deck)
-                    db_query("UPDATE rooms SET discard_pile = '[]' WHERE room_id = %s", (room_id,), commit=True)
-                else:
-                    deck = generate_deck()
+                deck = generate_deck()
+                db_query("UPDATE rooms SET deck = %s WHERE room_id = %s", (json.dumps(deck), room_id), commit=True)
             new_card = deck.pop(0)
             curr_hand.append(new_card)
             is_playable = check_validity(new_card, room['top_card'], room['current_color'])
@@ -483,7 +488,8 @@ async def refresh_ui_multi(room_id, bot, alert_msg_dict=None):
             if row: kb.append(row)
 
             controls = []
-            if i == room['turn_index'] and len(hand) == 2:
+            # زر الأونو يظهر فقط عند ورقتين وفيها ورقة تعمل
+            if i == room['turn_index'] and len(hand) == 2 and any(check_validity(c, room['top_card'], room['current_color']) for c in hand):
                 controls.append(InlineKeyboardButton(text="🚨 اونو!", callback_data=f"unomul_{room_id}"))
             for other in players:
                 ohand = safe_load(other['hand'])
@@ -513,8 +519,9 @@ async def refresh_ui_multi(room_id, bot, alert_msg_dict=None):
                 msg = await bot.send_message(p['user_id'], status_text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
             db_query("UPDATE room_players SET last_msg_id = %s WHERE room_id = %s AND user_id = %s", (msg.message_id, room_id, p['user_id']), commit=True)
             if i == room['turn_index']:
-                cd_msg = await bot.send_message(p['user_id'], "⏳ باقي 20 ثانية\n🟢🟢🟢🟢🟢🟢🟢🟢🟢🟢")
-                countdown_msgs[room_id] = {'bot': bot, 'chat_id': p['user_id'], 'msg_id': cd_msg.message_id}
+                cd_msg = await send_message_then_delete(bot, p['user_id'], "⏳ باقي 20 ثانية\n🟢🟢🟢🟢🟢🟢🟢🟢🟢🟢", delete_after_seconds=5)
+                if cd_msg:
+                    countdown_msgs[room_id] = {'bot': bot, 'chat_id': p['user_id'], 'msg_id': cd_msg.message_id}
 
         turn_timers[room_id] = asyncio.create_task(turn_timeout_multi(room_id, bot, room['turn_index']))
     except Exception as e: print(f"Multi UI Error: {e}")
@@ -538,8 +545,10 @@ async def handle_play_multi(c: types.CallbackQuery, state: FSMContext):
         p_name = players[p_idx].get('player_name') or "لاعب"
 
         if not check_validity(card, room['top_card'], room['current_color']):
-            deck = safe_load(room['deck'])
-            penalty = [deck.pop(0) for _ in range(1) if deck]
+            deck = ensure_deck_from_discard(room_id, room)
+            penalty = []
+            if deck:
+                penalty.append(deck.pop(0))
             hand.extend(penalty)
             db_query("UPDATE room_players SET hand = %s WHERE user_id = %s", (json.dumps(hand), c.from_user.id), commit=True)
             db_query("UPDATE rooms SET deck = %s WHERE room_id = %s", (json.dumps(deck), room_id), commit=True)
@@ -623,10 +632,14 @@ async def handle_play_multi(c: types.CallbackQuery, state: FSMContext):
             victim_idx = (p_idx + direction) % num_players
             victim = players[victim_idx]
             v_name = victim.get('player_name') or "لاعب"
-            deck = safe_load(room['deck'])
+            deck = ensure_deck_from_discard(room_id, room)
             v_hand = safe_load(victim['hand'])
             for _ in range(2):
-                if deck: v_hand.append(deck.pop(0))
+                if not deck:
+                    room = db_query("SELECT * FROM rooms WHERE room_id = %s", (room_id,))[0]
+                    deck = ensure_deck_from_discard(room_id, room)
+                if deck:
+                    v_hand.append(deck.pop(0))
             db_query("UPDATE room_players SET hand = %s WHERE user_id = %s", (json.dumps(v_hand), victim['user_id']), commit=True)
             db_query("UPDATE rooms SET deck = %s WHERE room_id = %s", (json.dumps(deck), room_id), commit=True)
             next_turn = (p_idx + direction * 2) % num_players
@@ -678,14 +691,18 @@ async def handle_color_multi(c: types.CallbackQuery, state: FSMContext):
             return
 
         penalty = 1 if "💧" in card else (2 if "🌊" in card else 0)
-        deck = safe_load(room['deck'])
+        deck = ensure_deck_from_discard(room_id, room)
         if penalty > 0:
             victim_idx = (p_idx + direction) % num_players
             victim = players[victim_idx]
             v_name = victim.get('player_name') or "لاعب"
             v_hand = safe_load(victim['hand'])
             for _ in range(penalty):
-                if deck: v_hand.append(deck.pop(0))
+                if not deck:
+                    room = db_query("SELECT * FROM rooms WHERE room_id = %s", (room_id,))[0]
+                    deck = ensure_deck_from_discard(room_id, room)
+                if deck:
+                    v_hand.append(deck.pop(0))
             db_query("UPDATE room_players SET hand = %s WHERE user_id = %s", (json.dumps(v_hand), victim['user_id']), commit=True)
             next_turn = (p_idx + direction * 2) % num_players
             alerts[victim['user_id']] = f"🎨 {p_name} اختار اللون {chosen_color} وسحبك {penalty} ورقة!"
@@ -713,12 +730,16 @@ async def handle_challenge_multi(c: types.CallbackQuery):
         direction = room.get('direction') or 1
         num_players = len(players)
         victim_idx = (p_idx + direction) % num_players
-        deck = safe_load(room['deck'])
+        deck = ensure_deck_from_discard(room_id, room)
         alerts = {}
         if decision == "n":
             v_hand = safe_load(players[victim_idx]['hand'])
             for _ in range(4):
-                if deck: v_hand.append(deck.pop(0))
+                if not deck:
+                    room = db_query("SELECT * FROM rooms WHERE room_id = %s", (room_id,))[0]
+                    deck = ensure_deck_from_discard(room_id, room)
+                if deck:
+                    v_hand.append(deck.pop(0))
             db_query("UPDATE room_players SET hand = %s WHERE user_id = %s", (json.dumps(v_hand), players[victim_idx]['user_id']), commit=True)
             next_turn = (p_idx + direction * 2) % num_players
             final_col = parts[3]
@@ -730,7 +751,11 @@ async def handle_challenge_multi(c: types.CallbackQuery):
             cheated = any(card.split()[0] == prev_col for card in p_hand if card.split()[0] in ['🔴', '🔵', '🟡', '🟢'])
             if cheated:
                 for _ in range(6):
-                    if deck: p_hand.append(deck.pop(0))
+                    if not deck:
+                        room = db_query("SELECT * FROM rooms WHERE room_id = %s", (room_id,))[0]
+                        deck = ensure_deck_from_discard(room_id, room)
+                    if deck:
+                        p_hand.append(deck.pop(0))
                 db_query("UPDATE room_players SET hand = %s WHERE user_id = %s", (json.dumps(p_hand), players[p_idx]['user_id']), commit=True)
                 next_turn = victim_idx
                 alerts[players[p_idx]['user_id']] = "🕵️‍♂️ كشفك الخصم! سحبت 6 ورقات عقوبة."
@@ -738,7 +763,11 @@ async def handle_challenge_multi(c: types.CallbackQuery):
             else:
                 v_hand = safe_load(players[victim_idx]['hand'])
                 for _ in range(6):
-                    if deck: v_hand.append(deck.pop(0))
+                    if not deck:
+                        room = db_query("SELECT * FROM rooms WHERE room_id = %s", (room_id,))[0]
+                        deck = ensure_deck_from_discard(room_id, room)
+                    if deck:
+                        v_hand.append(deck.pop(0))
                 db_query("UPDATE room_players SET hand = %s WHERE user_id = %s", (json.dumps(v_hand), players[victim_idx]['user_id']), commit=True)
                 next_turn = (p_idx + direction * 2) % num_players
                 alerts[players[p_idx]['user_id']] = "❌ فشل تحدي الخصم وسحب 6 ورقات!"
@@ -786,10 +815,14 @@ async def handle_catch_multi(c: types.CallbackQuery):
         p_name = me.get('player_name') if me else "لاعب"
         t_name = target.get('player_name') or "لاعب"
         if len(t_hand) == 1 and not str(target.get('said_uno')).lower() in ['true', '1']:
-            room_data = db_query("SELECT deck FROM rooms WHERE room_id = %s", (room_id,))[0]
-            deck = safe_load(room_data['deck'])
+            room_data = db_query("SELECT * FROM rooms WHERE room_id = %s", (room_id,))[0]
+            deck = ensure_deck_from_discard(room_id, room_data)
             for _ in range(2):
-                if deck: t_hand.append(deck.pop(0))
+                if not deck:
+                    room_data = db_query("SELECT * FROM rooms WHERE room_id = %s", (room_id,))[0]
+                    deck = ensure_deck_from_discard(room_id, room_data)
+                if deck:
+                    t_hand.append(deck.pop(0))
             db_query("UPDATE room_players SET hand = %s WHERE user_id = %s", (json.dumps(t_hand), target_id), commit=True)
             db_query("UPDATE rooms SET deck = %s WHERE room_id = %s", (json.dumps(deck), room_id), commit=True)
             await c.answer()
@@ -830,7 +863,10 @@ async def confirm_leave_multi(c: types.CallbackQuery):
     if not room_data:
         return
     room = room_data[0]
-    deck = safe_load(room['deck'])
+    deck = ensure_deck_from_discard(rid, room)
+    if not deck:
+        deck = []
+    deck = list(deck)
     deck.extend(my_hand)
     random.shuffle(deck)
 
