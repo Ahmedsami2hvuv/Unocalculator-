@@ -25,26 +25,6 @@ def get_ordered_players(room_id):
     players.sort(key=lambda x: (x.get('join_order') or 0, x['user_id']))
     return players
 
-def make_end_kb(players, room, mode='multi', for_user_id=None):
-    from handlers.common import replay_data
-    replay_id = str(uuid.uuid4())[:8]
-    replay_data[replay_id] = {
-        'players': [(p['user_id'], p.get('player_name') or 'لاعب') for p in players],
-        'max_players': room.get('max_players', 10),
-        'score_limit': room.get('score_limit', 0),
-        'mode': mode,
-        'creator_id': room.get('creator_id')
-    }
-    kb = []
-    if for_user_id:
-        for p in players:
-            if p['user_id'] != for_user_id:
-                p_name = p.get('player_name') or 'لاعب'
-                kb.append([InlineKeyboardButton(text=f"➕ إضافة {p_name}", callback_data=f"addfrnd_{p['user_id']}")])
-    kb.append([InlineKeyboardButton(text="🔄 لعب مرة أخرى", callback_data=f"replay_{replay_id}")])
-    kb.append([InlineKeyboardButton(text="🏠 القائمة الرئيسية", callback_data="home")])
-    return InlineKeyboardMarkup(inline_keyboard=kb)
-
 def generate_deck():
     colors = ['🔴', '🔵', '🟡', '🟢']
     deck = []
@@ -397,15 +377,19 @@ async def refresh_ui_multi(room_id, bot, alert_msg_dict=None):
                         rp_marker = num_emojis[rp_idx] if rp_idx < len(num_emojis) else '👤'
                         scores_text += f"{rp_marker} {rp_name}: {rp_score} نقطة\n"
                     summary = f"🏆 انتهت اللعبة!\n\n🥇 الفائز: {p_name}\n💰 النقاط: {new_total_score}\n\n{scores_text}\n📊 نقاط الجولة الأخيرة:\n{breakdown_text}\n\n🎯 سقف اللعب: {score_limit} نقطة"
+                    from handlers.common import create_replay_session, build_game_end_keyboard
+                    replay_id = create_replay_session(players, room, 'multi', summary)
                     for target_p in players:
-                        end_kb = make_end_kb(players, room, 'multi', for_user_id=target_p['user_id'])
+                        end_kb = build_game_end_keyboard(replay_id, target_p['user_id'])
                         await bot.send_message(target_p['user_id'], summary, reply_markup=end_kb)
                     db_query("DELETE FROM rooms WHERE room_id = %s", (room_id,), commit=True)
                     return
                 elif score_limit == 0:
                     summary = f"🏆 {p_name} فاز بالجولة! (+{round_points} نقطة)\n\n📊 النقاط المأخوذة:\n{breakdown_text}\n\n🎯 الوضع: جولة واحدة"
+                    from handlers.common import create_replay_session, build_game_end_keyboard
+                    replay_id = create_replay_session(players, room, 'multi', summary)
                     for target_p in players:
-                        end_kb = make_end_kb(players, room, 'multi', for_user_id=target_p['user_id'])
+                        end_kb = build_game_end_keyboard(replay_id, target_p['user_id'])
                         await bot.send_message(target_p['user_id'], summary, reply_markup=end_kb)
                     db_query("DELETE FROM rooms WHERE room_id = %s", (room_id,), commit=True)
                     return
@@ -879,12 +863,14 @@ async def confirm_leave_multi(c: types.CallbackQuery):
         await refresh_ui_multi(rid, c.bot, alerts)
     else:
         all_players_before = players + [{'user_id': c.from_user.id, 'player_name': leave_name}]
-        end_kb_me = make_end_kb(all_players_before, room, 'multi', for_user_id=c.from_user.id)
+        from handlers.common import create_replay_session, build_game_end_keyboard
+        replay_id = create_replay_session(all_players_before, room, 'multi', "انتهت اللعبة")
+        end_kb_me = build_game_end_keyboard(replay_id, c.from_user.id)
         await c.bot.send_message(c.from_user.id, f"🚪 انسحبت من اللعبة.", reply_markup=end_kb_me)
         if remaining_players:
             winner = remaining_players[0]
             w_name = winner.get('player_name') or "لاعب"
-            end_kb_w = make_end_kb(all_players_before, room, 'multi', for_user_id=winner['user_id'])
+            end_kb_w = build_game_end_keyboard(replay_id, winner['user_id'])
             await c.bot.send_message(winner['user_id'], f"🏆 {w_name} فاز! كل اللاعبين انسحبوا.", reply_markup=end_kb_w)
         db_query("DELETE FROM rooms WHERE room_id = %s", (rid,), commit=True)
 
