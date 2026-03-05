@@ -10,7 +10,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
 from database import db_query
 from i18n import t, get_lang, set_lang, TEXTS
-import random, string, json, asyncio, uuid
+import random, string, json, asyncio, uuid, time
 from urllib.parse import unquote
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 
@@ -486,6 +486,68 @@ class PlayerPostStates(StatesGroup):
     waiting_message = State()
 
 
+# قائمة انتظار النشر: في الذاكرة + قاعدة البيانات (لعمل أكثر من worker)
+_pending_post: dict = {}  # user_id -> {"add_profile": bool, "add_play": bool, "at": float}
+_PENDING_POST_TIMEOUT = 600  # 10 دقائق
+
+
+def _get_pending_post(uid: int):
+    """يرجع خيارات المنشور إن كان المستخدم بانتظار إرسال منشور (من الذاكرة أو DB)، بدون مسح."""
+    if uid in _pending_post:
+        t = _pending_post[uid].get("at", 0)
+        if time.time() - t <= _PENDING_POST_TIMEOUT:
+            return _pending_post[uid]
+        _pending_post.pop(uid, None)
+    try:
+        row = db_query(
+            "SELECT pending_post_options, pending_post_at FROM users WHERE user_id = %s",
+            (uid,)
+        )
+        if not row or not row[0].get("pending_post_options") or not row[0].get("pending_post_at"):
+            return None
+        opts_str = row[0]["pending_post_options"]
+        at = row[0]["pending_post_at"]
+        at_sec = at.timestamp() if at and hasattr(at, "timestamp") else (float(at) if isinstance(at, (int, float)) else 0)
+        if at_sec and (time.time() - at_sec) > _PENDING_POST_TIMEOUT:
+            db_query("UPDATE users SET pending_post_options = NULL, pending_post_at = NULL WHERE user_id = %s", (uid,), commit=True)
+            return None
+        opts = json.loads(opts_str) if isinstance(opts_str, str) else opts_str
+        return {"add_profile": opts.get("add_profile", True), "add_play": opts.get("add_play", False), "at": at_sec}
+    except Exception as e:
+        logger.debug("_get_pending_post DB: %s (شغّل إضافات schema_additions.sql إن لم تكن نُفّذت)", e)
+        return None
+
+
+def _get_and_clear_pending_post(uid: int):
+    """يرجع خيارات المنشور ويمسحها من الذاكرة والـ DB."""
+    opts = _pending_post.pop(uid, None)
+    if opts and (time.time() - opts.get("at", 0)) <= _PENDING_POST_TIMEOUT:
+        try:
+            db_query("UPDATE users SET pending_post_options = NULL, pending_post_at = NULL WHERE user_id = %s", (uid,), commit=True)
+        except Exception:
+            pass
+        return opts
+    try:
+        row = db_query(
+            "SELECT pending_post_options, pending_post_at FROM users WHERE user_id = %s",
+            (uid,)
+        )
+        if not row or not row[0].get("pending_post_options"):
+            return None
+        opts_str = row[0]["pending_post_options"]
+        at = row[0]["pending_post_at"]
+        if at is not None and hasattr(at, "timestamp"):
+            at = at.timestamp()
+        if at is not None and (time.time() - at) > _PENDING_POST_TIMEOUT:
+            db_query("UPDATE users SET pending_post_options = NULL, pending_post_at = NULL WHERE user_id = %s", (uid,), commit=True)
+            return None
+        db_query("UPDATE users SET pending_post_options = NULL, pending_post_at = NULL WHERE user_id = %s", (uid,), commit=True)
+        opts = json.loads(opts_str) if isinstance(opts_str, str) else opts_str
+        return {"add_profile": opts.get("add_profile", True), "add_play": opts.get("add_play", False), "at": at or 0}
+    except Exception:
+        return None
+
+
 def _banned_words_path():
     for base in (os.path.dirname(os.path.abspath(__file__)), os.getcwd()):
         p = os.path.join(base, "banned_words.txt")
@@ -576,6 +638,159 @@ async def clean_chat_messages(message: types.Message):
 async def start_button(message: types.Message):
     """زر ستارت: نفس عمل زر تنظيف الرسائل (مسح الرسائل ثم القائمة)."""
     await _clean_then_show_menu(message)
+
+
+def _has_pending_post(message: types.Message) -> bool:
+    """هل المستخدم في قائمة انتظار إرسال منشور (من الذاكرة أو DB)؟"""
+    uid = message.from_user.id if message.from_user else None
+    if not uid:
+        return False
+    return _get_pending_post(uid) is not None
+
+
+@router.message(F.text, _has_pending_post)
+async def player_post_receive_text_pending(message: types.Message, state: FSMContext):
+    """استقبال نص المنشور عبر قائمة الانتظار (من الذاكرة أو DB)."""
+    uid = message.from_user.id
+    logger.info("player_post_receive_text_pending: processing uid=%s", uid)
+    opts = _get_and_clear_pending_post(uid)
+    if not opts:
+        return
+    await state.clear()
+    add_profile = opts.get("add_profile", True)
+    add_play = opts.get("add_play", False)
+    chat_target = _normalize_channel_target()
+    if not chat_target:
+        await message.answer(
+            "⚠️ نشر المنشورات غير متاح حالياً.\n\n"
+            "تحقق من إعدادات القناة في handlers/channel_config.py."
+        )
+        return
+    text = (message.text or "").strip()
+    ok, reason = check_post_content(text)
+    if not ok:
+        await message.answer(f"⛔ {reason}")
+        return
+    name = _get_player_name_for_post(uid, message.from_user.full_name)
+    text_to_send = f"👤 **{name}**\n\n{text}"
+    join_code = None
+    if add_play:
+        try:
+            join_code = _create_deferred_2p_room(uid, name)
+        except Exception as e:
+            logger.warning("player_post: create_room: %s", e)
+    reply_kb = _channel_post_buttons(uid, add_profile, join_code)
+    if (add_profile or join_code) and not reply_kb:
+        await message.answer(
+            "⚠️ تم ضبط الخيارات لكن **BOT_USERNAME** غير مضبوط. اضبطه ثم أعد المحاولة."
+        )
+        return
+    sent_msg_id = None
+    logger.info("player_post: sending text to channel chat_id=%s (pending)", chat_target)
+    try:
+        sent = await message.bot.send_message(
+            chat_id=chat_target,
+            text=text_to_send,
+            parse_mode="Markdown",
+            reply_markup=reply_kb
+        )
+        sent_msg_id = sent.message_id
+        logger.info("player_post: sent successfully message_id=%s", sent_msg_id)
+    except Exception as e:
+        logger.exception("player_post: send_message failed: %s", e)
+        try:
+            sent = await message.bot.send_message(
+                chat_id=chat_target,
+                text=text_to_send,
+                parse_mode="Markdown"
+            )
+            sent_msg_id = sent.message_id
+        except Exception as e2:
+            logger.exception("player_post: send without buttons failed: %s", e2)
+            await message.answer(
+                "❌ فشل النشر. تأكد أن البوت مسؤول في القناة وله صلاحية «نشر رسائل». الخطأ: " + str(e2)[:150]
+            )
+            return
+    if sent_msg_id is not None:
+        try:
+            row = db_query(
+                "INSERT INTO channel_posts (channel_id, message_id, publisher_uid, add_profile, join_code) VALUES (%s, %s, %s, %s, %s) RETURNING id",
+                (str(chat_target), sent_msg_id, uid, bool(add_profile), join_code),
+                commit=True
+            )
+            if row:
+                post_id = row[0].get("id")
+                new_kb = _channel_post_buttons(uid, add_profile, join_code, post_id=post_id, likes_count=0)
+                if new_kb:
+                    await message.bot.edit_message_reply_markup(
+                        chat_id=chat_target, message_id=sent_msg_id, reply_markup=new_kb
+                    )
+        except Exception as e:
+            logger.exception("player_post: save_post: %s", e)
+    kb_after = []
+    if PUBLISH_CHANNEL_USERNAME:
+        ch_user = PUBLISH_CHANNEL_USERNAME.lstrip("@")
+        kb_after.append([InlineKeyboardButton(text="📢 الذهاب للقناة", url=f"https://t.me/{ch_user}")])
+    kb_after.append([InlineKeyboardButton(text="🔙 رجوع للقائمة الرئيسية", callback_data="home")])
+    await message.answer("✅ تم نشر منشورك في القناة.", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_after))
+
+
+@router.message(F.photo | F.voice | F.video | F.animation | F.sticker | F.document | F.audio | F.video_note, _has_pending_post)
+async def player_post_receive_media_pending(message: types.Message, state: FSMContext):
+    """استقبال ميديا المنشور عبر قائمة الانتظار (من الذاكرة أو DB)."""
+    uid = message.from_user.id
+    opts = _get_and_clear_pending_post(uid)
+    if not opts:
+        return
+    await state.clear()
+    add_profile = opts.get("add_profile", True)
+    add_play = opts.get("add_play", False)
+    chat_target = _normalize_channel_target()
+    if not chat_target:
+        await message.answer("⚠️ نشر المنشورات غير متاح حالياً.")
+        return
+    caption_text = (message.caption or "").strip()
+    if caption_text:
+        ok, reason = check_post_content(caption_text)
+        if not ok:
+            await message.answer(f"⛔ {reason}")
+            return
+    name = _get_player_name_for_post(uid, message.from_user.full_name)
+    join_code = None
+    if add_play:
+        try:
+            join_code = _create_deferred_2p_room(uid, name)
+        except Exception:
+            pass
+    reply_kb = _channel_post_buttons(uid, add_profile, join_code)
+    ok, sent_msg_id = await _publish_media_to_channel(message.bot, message, name, reply_markup=reply_kb)
+    if not ok and reply_kb:
+        ok, sent_msg_id = await _publish_media_to_channel(message.bot, message, name, reply_markup=None)
+    if ok and sent_msg_id is not None:
+        try:
+            row = db_query(
+                "INSERT INTO channel_posts (channel_id, message_id, publisher_uid, add_profile, join_code) VALUES (%s, %s, %s, %s, %s) RETURNING id",
+                (str(chat_target), sent_msg_id, uid, bool(add_profile), join_code),
+                commit=True
+            )
+            if row:
+                post_id = row[0].get("id")
+                new_kb = _channel_post_buttons(uid, add_profile, join_code, post_id=post_id, likes_count=0)
+                if new_kb:
+                    await message.bot.edit_message_reply_markup(
+                        chat_id=chat_target, message_id=sent_msg_id, reply_markup=new_kb
+                    )
+        except Exception as e:
+            logger.exception("player_post: save_post media: %s", e)
+    if ok:
+        kb_after = []
+        if PUBLISH_CHANNEL_USERNAME:
+            ch_user = PUBLISH_CHANNEL_USERNAME.lstrip("@")
+            kb_after.append([InlineKeyboardButton(text="📢 الذهاب للقناة", url=f"https://t.me/{ch_user}")])
+        kb_after.append([InlineKeyboardButton(text="🔙 رجوع للقائمة الرئيسية", callback_data="home")])
+        await message.answer("✅ تم نشر منشورك في القناة.", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_after))
+    else:
+        await message.answer("❌ فشل النشر. تأكد أن البوت مسؤول في القناة وله صلاحية «نشر رسائل».")
 
 
 class FilterInRoom(BaseFilter):
@@ -3496,6 +3711,25 @@ async def post_toggle_play(c: types.CallbackQuery, state: FSMContext):
 async def post_ready_send(c: types.CallbackQuery, state: FSMContext):
     if await state.get_state() != PlayerPostStates.waiting_options.state:
         return await c.answer()
+    data = await state.get_data()
+    add_profile = data.get("post_add_profile", True)
+    add_play = data.get("post_add_play", False)
+    uid = c.from_user.id
+    _pending_post[uid] = {"add_profile": add_profile, "add_play": add_play, "at": time.time()}
+    try:
+        db_query(
+            "INSERT INTO users (user_id, username, is_registered) VALUES (%s, %s, FALSE) ON CONFLICT (user_id) DO NOTHING",
+            (uid, c.from_user.username or ""),
+            commit=True
+        )
+        opts_json = json.dumps({"add_profile": add_profile, "add_play": add_play})
+        db_query(
+            "UPDATE users SET pending_post_options = %s, pending_post_at = CURRENT_TIMESTAMP WHERE user_id = %s",
+            (opts_json, uid),
+            commit=True
+        )
+    except Exception as e:
+        logger.warning("post_ready_send: could not save pending_post to DB: %s", e)
     await state.set_state(PlayerPostStates.waiting_message)
     await c.message.edit_text(
         "📢 أرسل الآن النص أو الصور أو الصوت أو الفيديو أو الملصقات أو أي ميديا للنشر في القناة.\n\n⚠️ لا يُسمح بنشر أرقام هواتف أو كلمات تخالف المعايير."
