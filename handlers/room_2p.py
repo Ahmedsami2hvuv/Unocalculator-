@@ -1031,7 +1031,7 @@ async def handle_play(c: types.CallbackQuery, state: FSMContext):
             db_query("DELETE FROM room_players WHERE room_id = %s", (room_id,), commit=True)
             win_text = f"🏆 **{p_name} فاز بالجولة!** 🏆\n📊 حصل على {points} نقطة."
             from handlers.common import create_replay_session, build_game_end_keyboard
-            replay_id = create_replay_session(players, room, '2p', win_text)
+            replay_id = create_replay_session(players, room, '2p', win_text, winner_id=c.from_user.id)
             for p in players:
                 end_kb = build_game_end_keyboard(replay_id, p['user_id'])
                 await c.bot.send_message(p['user_id'], win_text, reply_markup=end_kb)
@@ -1078,7 +1078,10 @@ async def handle_play(c: types.CallbackQuery, state: FSMContext):
             cancel_timer(room_id)
             cancel_auto_draw_task(room_id)
             msg = "⚠️ ما عندك ورقة مناسبة! راح اسحبلك تلقائياً بعد 5 ثواني..."
-            await refresh_ui_2p(room_id, c.bot, {current_id: msg})
+            alert_dict = {current_id: msg}
+            for k, v in alerts.items():
+                alert_dict[k] = v
+            await refresh_ui_2p(room_id, c.bot, alert_dict)
             for idx2, p2 in enumerate(players):
                 if p2['user_id'] == current_id:
                     auto_draw_tasks[room_id] = asyncio.create_task(background_auto_draw(room_id, c.bot, idx2))
