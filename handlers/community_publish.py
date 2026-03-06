@@ -62,13 +62,16 @@ def _get_and_clear_pending_post(uid: int):
 
 
 def _banned_words_path():
+    # يدعم banned_words.txt و banned_words.tx (تصحيح خطأ اسم الملف في المستودع)
+    names = ("banned_words.txt", "banned_words.tx")
     for base in (os.path.dirname(os.path.abspath(__file__)), os.getcwd()):
-        p = os.path.join(base, "banned_words.txt")
-        if os.path.isfile(p):
-            return p
-        p = os.path.join(os.path.dirname(base), "banned_words.txt")
-        if os.path.isfile(p):
-            return p
+        for name in names:
+            p = os.path.join(base, name)
+            if os.path.isfile(p):
+                return p
+            p = os.path.join(os.path.dirname(base), name)
+            if os.path.isfile(p):
+                return p
     return None
 
 
@@ -166,7 +169,13 @@ async def player_post_receive_text_pending(message: types.Message, state: FSMCon
             sent_msg_id = sent.message_id
         except Exception as e2:
             logger.exception("player_post: send without buttons failed: %s", e2)
-            await message.answer("❌ فشل النشر. تأكد أن البوت مسؤول في القناة وله صلاحية «نشر رسائل». الخطأ: " + str(e2)[:150])
+            err_preview = str(e2).replace("'", "").strip()[:180]
+            await message.answer(
+                "❌ فشل النشر.\n\n"
+                "• تأكد أن البوت **مضاف في القناة كمسؤول** وله صلاحية «نشر رسائل».\n"
+                "• تأكد أن معرف القناة صحيح (PUBLISH_CHANNEL_ID أو يوزر القناة).\n\n"
+                "الخطأ: " + err_preview
+            )
             return
     if sent_msg_id is not None:
         try:
@@ -181,6 +190,8 @@ async def player_post_receive_text_pending(message: types.Message, state: FSMCon
                     await message.bot.edit_message_reply_markup(chat_id=chat_target, message_id=sent_msg_id, reply_markup=new_kb)
         except Exception as e:
             logger.exception("player_post: save_post: %s", e)
+            if "channel_posts" in str(e).lower() or "relation" in str(e).lower():
+                logger.warning("جرّب تشغيل schema_additions.sql لإنشاء جدول channel_posts")
     kb_after = []
     if PUBLISH_CHANNEL_USERNAME:
         kb_after.append([InlineKeyboardButton(text="📢 الذهاب للقناة", url=f"https://t.me/{PUBLISH_CHANNEL_USERNAME.lstrip('@')}")])
