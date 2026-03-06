@@ -103,6 +103,7 @@ TEXTS = {
         "btn_calc": "🧮 حاسبة أونو",
         "btn_rules": "📜 القوانين",
         "btn_leaderboard": "📊 الإحصائيات",
+        "btn_bot_info": "ℹ️ معلومات البوت",
         "btn_change_lang": "🌍 تغيير اللغة",
         "choose_language": "🌍 **اختر اللغة:**",
         "menu_updated": "تم تحديث القائمة 🎮",
@@ -164,6 +165,53 @@ TEXTS = {
         "btn_public_rooms": "🚪 غرف عامة",
         "player_removed_5_skips": "⛔ تم إزالتك من اللعب تلقائياً لأنك تركت الدور 5 مرات.",
         "player_removed_5_skips_others": "⛔ تم إزالة {name} من اللعب (ترك الدور 5 مرات).",
+        "bot_info_title": "ℹ️ **معلومات البوت**",
+        "bot_info_text": (
+            "🎮 **مرحباً بكم في بوت أونو**\n\n"
+            "هنا كل شيء تقدر تسويه داخل البوت 👇\n\n"
+            "🎲 **1) لعب عشوائي**\n"
+            "• 🔍 البوت يدور لك خصم وتبدون فوراً.\n"
+            "• ⏳ لكل لاعب وقت محدد حتى يلعب.\n"
+            "• 🃏 تلعب نفس **اللون** أو نفس **الرقم/الرمز** مثل الورقة النازلة.\n"
+            "• ✅ إذا بقي عندك ورقتين و\"تشتغل\" تقدر تستخدم زر **🚨 اونو!**\n"
+            "• 🪤 إذا خصمك بقى عنده ورقة وحدة وما صاح \"اونو\"، تقدر تسوي **صيدة** (إذا متاحة).\n\n"
+            "👥 **2) لعب مع الأصدقاء (الغرف)**\n"
+            "تقدر:\n"
+            "• ➕ **تنشئ غرفة** وتحدد:\n"
+            "  - 👥 عدد اللاعبين\n"
+            "  - 🎯 سقف النقاط (أو جولة واحدة)\n"
+            "• 🔑 **تنضم بكود** أو **برابط دعوة**.\n"
+            "• 🚪 تشوف **الغرف المتوفرة** وتدخل/تنسحب.\n"
+            "• 📋 تشوف **غرفك المفتوحة** وتلغيها.\n"
+            "• 🚪 تدخل **غرف عامة** (إذا مفعلة).\n\n"
+            "👤 **3) حسابك وبروفايلات اللاعبين**\n"
+            "• 👤 **حسابي**: تشوف معلوماتك ونقاطك وتقدر تعدّل بياناتك.\n"
+            "• 🔍 تقدر تفتح **بروفايل أي لاعب** وتشوف نقاطه وحالته.\n"
+            "• ➕ **متابعة / إلغاء المتابعة** لأي لاعب.\n"
+            "• 🎮 **دعوة للعب** من داخل بروفايل اللاعب.\n\n"
+            "📊 **4) لوحة المتصدرين (الإحصائيات)**\n"
+            "• 📊 تعرض أفضل اللاعبين حسب النقاط.\n"
+            "• 🔵 **انقر على اسم اللاعب لعرض معلوماته** (يفتح بروفايله مباشرة).\n\n"
+            "👥 **5) القائمة الاجتماعية**\n"
+            "• 📈 تشوف **المتابعين** و **اللي تتابعهم**.\n"
+            "• 🔍 تبحث عن لاعب وتفتح بروفايله.\n"
+            "• 🔕 تحكم بكتم دعوات لاعب (إذا ظهر الخيار).\n\n"
+            "🧮 **6) حاسبة نقاط أونو**\n"
+            "• تحسب النقاط بسهولة من داخل البوت.\n\n"
+            "📜 **7) القوانين**\n"
+            "• شرح كامل للقوانين + شرح أوراق الأكشن والجوكر.\n"
+            "• 🔥 جوكر +4 فيه **تحدي** والبوت يفحص إذا اللعب صحيح أو غش.\n\n"
+            "🏁 **8) بعد نهاية الجولة**\n"
+            "• 🔄 زر **لعب مرة أخرى** لدعوة نفس الفريق بسرعة.\n"
+            "• 📢 قد يظهر زر **نشر فوزك** إذا ميزة النشر مفعلة.\n\n"
+            "👥 **9) مجتمع الأونو (القناة)**\n"
+            "إذا ميزة المجتمع مفعلة:\n"
+            "• 📢 تقدر **تنشر منشور بالقناة** (نص/صورة/فيديو…).\n"
+            "• 👤 تقدر تضيف زر \"حسابي\" تحت المنشور.\n"
+            "• 🎮 تقدر تضيف زر \"العب معي\" حتى أي شخص ينضم لك بسرعة.\n\n"
+            "🌍 **10) تغيير اللغة**\n"
+            "• 🇮🇶 عربي  • 🇬🇧 English  • 🇮🇷 فارسی\n"
+        ),
     },
     "en": {
         "welcome_new": "Welcome! 👋\nLog in or register to play.",
@@ -225,6 +273,7 @@ TEXTS = {
         "btn_calc": "🧮 Uno Calculator",
         "btn_rules": "📜 Rules",
         "btn_leaderboard": "📊 Statistics",
+        "btn_bot_info": "ℹ️ Bot info",
         "btn_change_lang": "🌍 Change language",
         "choose_language": "🌍 **Choose language:**",
         "menu_updated": "Menu updated 🎮",
@@ -254,6 +303,30 @@ TEXTS = {
         "btn_public_rooms": "🚪 Public rooms",
         "player_removed_5_skips": "⛔ You were removed from the game for skipping your turn 5 times.",
         "player_removed_5_skips_others": "⛔ {name} was removed from the game (skipped 5 times).",
+        "bot_info_title": "ℹ️ **Bot info**",
+        "bot_info_text": (
+            "🎮 **Welcome to Uno Bot**\n\n"
+            "Here’s what you can do 👇\n\n"
+            "🎲 **1) Random play**\n"
+            "• 🔍 The bot finds you an opponent and you start immediately.\n"
+            "• ⏳ Each player has a limited time to play.\n"
+            "• 🃏 Play the same **color** or the same **number/symbol**.\n\n"
+            "👥 **2) Play with friends (rooms)**\n"
+            "• ➕ Create a room and set players/score limit.\n"
+            "• 🔑 Join by code or invite link.\n"
+            "• 🚪 Public rooms (if enabled).\n\n"
+            "👤 **3) My account & profiles**\n"
+            "• View your points and account.\n"
+            "• Follow/unfollow players, invite them to play.\n\n"
+            "📊 **4) Leaderboard**\n"
+            "• Tap a player name to open their profile.\n\n"
+            "🧮 **5) Uno calculator**\n"
+            "• Calculate points from inside the bot.\n\n"
+            "📜 **6) Rules**\n"
+            "• Full rules + special cards + +4 challenge.\n\n"
+            "🌍 **7) Language**\n"
+            "• Arabic • English • Persian\n"
+        ),
     },
     "fa": {
         "welcome_new": "خوش آمدید! 👋\nبرای بازی وارد شوید یا ثبت‌نام کنید.",
@@ -315,6 +388,7 @@ TEXTS = {
         "btn_calc": "🧮 ماشین‌حساب اونو",
         "btn_rules": "📜 قوانین",
         "btn_leaderboard": "📊 آمار",
+        "btn_bot_info": "ℹ️ اطلاعات ربات",
         "btn_change_lang": "🌍 تغییر زبان",
         "choose_language": "🌍 **زبان را انتخاب کنید:**",
         "menu_updated": "منو به‌روز شد 🎮",
@@ -332,6 +406,21 @@ TEXTS = {
         "leaderboard_row": "{rank}. {name} — {points} امتیاز",
         "leaderboard_hint": "\n\n_برای باز کردن پروفایل، روی نام بازیکن بزنید._",
         "round_summary_won": "برندهٔ دور شد",
+        "bot_info_title": "ℹ️ **اطلاعات ربات**",
+        "bot_info_text": (
+            "🎮 **به ربات اونو خوش آمدید**\n\n"
+            "امکانات اصلی 👇\n\n"
+            "🎲 **1) بازی تصادفی**\n"
+            "• ربات برای شما حریف پیدا می‌کند.\n\n"
+            "👥 **2) بازی با دوستان (اتاق‌ها)**\n"
+            "• ساخت اتاق، ورود با کد/لینک.\n\n"
+            "📊 **3) جدول امتیازات**\n"
+            "• با لمس نام بازیکن، پروفایلش باز می‌شود.\n\n"
+            "📜 **4) قوانین**\n"
+            "• قوانین کامل + کارت‌های ویژه.\n\n"
+            "🌍 **5) زبان**\n"
+            "• عربی • انگلیسی • فارسی\n"
+        ),
         "match_history_title": "📜 آخرین بازی‌های شما",
         "match_history_none": "هنوز بازی‌ای ثبت نشده.",
         "match_history_row": "دور {round} — بردی 🏆 (اتاق {room})",
