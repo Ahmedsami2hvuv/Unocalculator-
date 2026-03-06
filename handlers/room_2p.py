@@ -1012,7 +1012,7 @@ async def bot_play_turn(room_id, bot):
             if deck:
                 new_card = deck.pop(0)
                 bot_hand.append(new_card)
-                db_query("UPDATE room_players SET hand = %s WHERE user_id = %s", (json.dumps(bot_hand), BOT_USER_ID), commit=True)
+                db_query("UPDATE room_players SET hand = %s, said_uno = FALSE WHERE user_id = %s", (json.dumps(bot_hand), BOT_USER_ID), commit=True)
                 db_query("UPDATE rooms SET deck = %s WHERE room_id = %s", (json.dumps(deck), room_id), commit=True)
                 if check_validity(new_card, top_card, current_color):
                     valid = [new_card]
@@ -1026,7 +1026,10 @@ async def bot_play_turn(room_id, bot):
         bot_hand.remove(card)
         discard_pile = safe_load(room.get('discard_pile', '[]'))
         discard_pile.append(top_card)
-        db_query("UPDATE room_players SET hand = %s WHERE user_id = %s", (json.dumps(bot_hand), BOT_USER_ID), commit=True)
+        # البوت يصرّح أونو تلقائياً عندما يبقى له ورقة واحدة
+        bot_said_uno = len(bot_hand) == 1
+        db_query("UPDATE room_players SET hand = %s, said_uno = %s WHERE user_id = %s",
+            (json.dumps(bot_hand), bot_said_uno, BOT_USER_ID), commit=True)
         db_query("UPDATE rooms SET discard_pile = %s WHERE room_id = %s", (json.dumps(discard_pile), room_id), commit=True)
         p_name = "البوت"
 
@@ -1622,7 +1625,7 @@ async def handle_catch(c: types.CallbackQuery):
                     deck = ensure_deck_from_discard(room_id, room_data)
                 if deck:
                     opp_h.append(deck.pop(0))
-            db_query("UPDATE room_players SET hand = %s WHERE user_id = %s", (json.dumps(opp_h), opp['user_id']), commit=True)
+            db_query("UPDATE room_players SET hand = %s, said_uno = FALSE WHERE user_id = %s", (json.dumps(opp_h), opp['user_id']), commit=True)
             db_query("UPDATE rooms SET deck = %s WHERE room_id = %s", (json.dumps(deck), room_id), commit=True)
             await c.answer()
             try:
