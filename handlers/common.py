@@ -28,6 +28,19 @@ BOT_USERNAME = os.getenv("BOT_USERNAME", "").strip() or None
 # تحميل channel_config من نفس مجلد هذا الملف (يعمل أينما شغّلت البوت)
 _cc = None
 _handlers_dir = os.path.dirname(os.path.abspath(__file__))
+_project_root = os.path.dirname(_handlers_dir)
+BOT_INFO_FILE = os.path.join(_project_root, "BOT_INFO_MESSAGE.md")
+
+
+def _read_bot_info_message():
+    """يقرأ نص رسالة معلومات البوت من الملف BOT_INFO_MESSAGE.md إن وُجد."""
+    try:
+        if os.path.isfile(BOT_INFO_FILE):
+            with open(BOT_INFO_FILE, "r", encoding="utf-8") as f:
+                return f.read().strip()
+    except Exception:
+        pass
+    return None
 _config_path = os.path.join(_handlers_dir, "channel_config.py")
 if os.path.isfile(_config_path):
     try:
@@ -3510,7 +3523,9 @@ async def show_rules(c: types.CallbackQuery):
 @router.callback_query(F.data == "bot_info")
 async def show_bot_info(c: types.CallbackQuery):
     uid = c.from_user.id
-    text = t(uid, "bot_info_title") + "\n\n" + t(uid, "bot_info_text")
+    text = _read_bot_info_message()
+    if not text:
+        text = t(uid, "bot_info_title") + "\n\n" + t(uid, "bot_info_text")
     kb = [[InlineKeyboardButton(text=t(uid, "btn_back_short"), callback_data="home")]]
     try:
         await c.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="Markdown")
