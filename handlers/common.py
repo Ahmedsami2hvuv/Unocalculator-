@@ -646,8 +646,16 @@ async def start_button(message: types.Message):
 
 
 class FilterInRoom(BaseFilter):
-    """يمرّر فقط إذا كان المرسل داخل غرفة (انتظار أو لعب)."""
-    async def __call__(self, message: types.Message) -> bool:
+    """يمرّر فقط إذا كان المرسل داخل غرفة (انتظار أو لعب). لا يمرّر إذا كان في وضع نشر منشور (حتى تصل الرسالة لمعالج النشر)."""
+    async def __call__(self, message: types.Message, data: dict) -> bool:
+        state = data.get("state")
+        if state:
+            try:
+                s = await state.get_state()
+                if s and ("waiting_message" in (s or "") or "waiting_options" in (s or "")):
+                    return False
+            except Exception:
+                pass
         return get_user_current_room(message.from_user.id) is not None
 
 
@@ -735,12 +743,6 @@ async def _send_media_copy(bot, chat_id: int, message: types.Message, sender_nam
 @router.message(FilterInRoom())
 async def room_chat_broadcast(message: types.Message, state: FSMContext):
     """نظام محادثة الغرفة: أي رسالة (نص، صورة، صوت، فيديو، ملصق، ...) من لاعب داخل الغرفة تُذاع للباقين وتُحذف بعد 10 ثوانٍ."""
-    try:
-        s = await state.get_state()
-        if s and ("waiting_message" in (s or "") or "waiting_options" in (s or "")):
-            return
-    except Exception:
-        pass
     if message.text and (message.text.strip().startswith("/") and message.text.strip().lower() != "/start"):
         return
     if not message.text and not message.photo and not message.voice and not message.video and not message.animation and not message.sticker and not message.document and not message.audio and not message.video_note:
