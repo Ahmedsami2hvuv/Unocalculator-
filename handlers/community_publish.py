@@ -256,17 +256,21 @@ def _get_player_name_for_post(user_id: int, full_name: str = None) -> str:
 
 
 def _normalize_channel_target():
+    """يرجع معرف القناة للنشر (رقم سالب أو @username). يدعم القيم النصية من متغيرات البيئة."""
     raw = PUBLISH_CHANNEL_ID
     if raw is not None:
         try:
-            ch = int(raw)
-            if ch > 0:
-                ch = -ch
-            return ch
+            s = str(raw).strip().strip('"').strip("'")
+            if s:
+                ch = int(s)
+                if ch > 0:
+                    ch = -ch
+                return ch
         except (TypeError, ValueError):
             pass
-    if PUBLISH_CHANNEL_USERNAME:
-        return f"@{PUBLISH_CHANNEL_USERNAME.lstrip('@')}"
+    un = (PUBLISH_CHANNEL_USERNAME or "").strip().strip('"').strip("'").lstrip("@")
+    if un:
+        return f"@{un}"
     return None
 
 
@@ -534,7 +538,14 @@ async def player_post_receive_text_from_options(message: types.Message, state: F
     chat_target = _normalize_channel_target()
     if not chat_target:
         logger.warning("player_post_receive_text_from_options: no chat_target")
-        return await message.answer("⚠️ نشر المنشورات غير متاح حالياً.")
+        return await message.answer(
+            "⚠️ **النشر معطّل:** لم يتم ضبط القناة.\n\n"
+            "في Railway (أو Variables): أضف:\n"
+            "• **PUBLISH_CHANNEL_ID** = معرف القناة الرقمي (سالب، مثل -1001234567890)\n"
+            "• **PUBLISH_CHANNEL_USERNAME** = يوزر القناة بدون @\n\n"
+            "وأضف البوت في القناة كـ **مسؤول** مع صلاحية «نشر رسائل».",
+            parse_mode="Markdown"
+        )
     text = (message.text or "").strip()
     ok, reason = check_post_content(text)
     if not ok:
@@ -845,6 +856,34 @@ class _FilterPostFallback(BaseFilter):
         if not _normalize_channel_target():
             return False
         return True
+
+
+class _FilterPostFallbackChannelMissing(BaseFilter):
+    """يمرّر عندما المستخدم فتح «نشر منشور» منذ دقائق لكن القناة غير مضبوطة — لردّ توجيهي."""
+    async def __call__(self, message: types.Message, data: dict) -> bool:
+        if not message.text or (message.text or "").strip().startswith("/"):
+            return False
+        uid = message.from_user.id if message.from_user else None
+        if not uid:
+            return False
+        if time.time() - (_last_post_options_at.get(uid) or 0) > _LAST_POST_OPTIONS_WINDOW:
+            return False
+        if _normalize_channel_target():
+            return False
+        return True
+
+
+# عندما فتح «نشر منشور» مؤخراً لكن القناة غير مضبوطة — نردّ بتوجيه واضح
+@router.message(F.text, _FilterPostFallbackChannelMissing())
+async def player_post_channel_missing_reply(message: types.Message):
+    await message.answer(
+        "⚠️ **النشر معطّل:** القناة غير مضبوطة في الإعدادات.\n\n"
+        "في **Variables** (Railway أو السيرفر) أضف:\n"
+        "• **PUBLISH_CHANNEL_ID** = معرف القناة الرقمي (سالب، مثل -1001234567890)\n"
+        "• **PUBLISH_CHANNEL_USERNAME** = يوزر القناة بدون @\n\n"
+        "ثم أضف البوت في القناة كـ **مسؤول** مع صلاحية «نشر رسائل» وأعد تشغيل التطبيق.",
+        parse_mode="Markdown"
+    )
 
 
 # معالجة عندما فُقدت الحالة لكن المستخدم فتح «نشر منشور» منذ دقائق — نعالج الرسالة كنشر
