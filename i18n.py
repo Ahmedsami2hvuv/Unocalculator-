@@ -150,7 +150,7 @@ TEXTS = {
         "leaderboard_friends": "👥 متابعيني فقط",
         "leaderboard_empty": "لا يوجد لاعبون بعد.",
         "leaderboard_row": "{rank}. {name} — {points} نقطة",
-        "leaderboard_hint": "\n\n_اضغط على اسم اللاعب لفتح حسابه._",
+        "leaderboard_hint": "\n_انقر على اسم اللاعب لعرض معلوماته._",
         "round_summary_won": "فاز بالجولة",
         "match_history_title": "📜 آخر مبارياتك",
         "match_history_none": "لا توجد مباريات مسجلة بعد.",
