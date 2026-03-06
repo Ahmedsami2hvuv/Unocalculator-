@@ -118,6 +118,61 @@ async def cmd_test_publish_channel(message: types.Message):
         )
 
 
+@router.callback_query(F.data == "admin_test_publish")
+async def admin_test_publish_callback(c: types.CallbackQuery):
+    """زر اختبار النشر من لوحة الأدمن."""
+    if not _admin_only(c):
+        return await c.answer("⛔ غير مسموح.", show_alert=True)
+    await c.answer()
+    try:
+        from handlers.common import PUBLISH_CHANNEL_ID, PUBLISH_CHANNEL_USERNAME
+    except Exception:
+        await c.message.edit_text("❌ تعذر تحميل إعدادات القناة.")
+        return
+    chat_target = None
+    if PUBLISH_CHANNEL_ID is not None:
+        try:
+            raw = str(PUBLISH_CHANNEL_ID).strip().strip('"').strip("'")
+            if raw:
+                ch = int(raw)
+                chat_target = -ch if ch > 0 else ch
+        except (TypeError, ValueError):
+            pass
+    if chat_target is None and (PUBLISH_CHANNEL_USERNAME or "").strip():
+        un = (PUBLISH_CHANNEL_USERNAME or "").strip().lstrip("@")
+        chat_target = f"@{un}"
+    if not chat_target:
+        await c.message.edit_text(
+            "⚠️ قناة النشر غير مضبوطة.\n\n"
+            "اضبط PUBLISH_CHANNEL_ID أو PUBLISH_CHANNEL_USERNAME في channel_config.py أو متغيرات البيئة."
+        )
+        return
+    try:
+        await c.bot.send_message(
+            chat_target,
+            "✅ رسالة تجريبية من البوت — النشر يعمل بشكل سليم.",
+            parse_mode=None
+        )
+        await c.message.edit_text(
+            f"✅ تم إرسال رسالة تجريبية إلى القناة (chat_id={chat_target}).\n\n"
+            "تحقق من القناة. إن لم تظهر الرسالة، أضف البوت كـ **مسؤول** مع صلاحية «نشر رسائل».",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔙 رجوع", callback_data="admin_back")]
+            ])
+        )
+    except Exception as e:
+        err = str(e).replace("'", "")[:280]
+        await c.message.edit_text(
+            "❌ فشل إرسال الرسالة التجريبية إلى القناة.\n\n"
+            "• أضف البوت في القناة كـ **مسؤول** وامنحه صلاحية «نشر رسائل».\n"
+            "• تأكد أن معرف القناة أو اليوزر صحيح.\n\n"
+            f"الخطأ: {err}",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔙 رجوع", callback_data="admin_back")]
+            ])
+        )
+
+
 @router.callback_query(F.data == "admin_open_panel")
 async def admin_open_from_menu(c: types.CallbackQuery, state: FSMContext):
     if not _admin_only(c):
@@ -130,6 +185,7 @@ async def admin_open_from_menu(c: types.CallbackQuery, state: FSMContext):
 def _admin_menu_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📢 اذاعة بث للجميع", callback_data="admin_broadcast")],
+        [InlineKeyboardButton(text="📡 اختبار النشر في القناة", callback_data="admin_test_publish")],
         [InlineKeyboardButton(text="📊 عدد اللاعبين وإحصائيات", callback_data="admin_stats")],
         [InlineKeyboardButton(text="👥 قائمة اللاعبين / بحث وتعديل", callback_data="admin_players")],
         [InlineKeyboardButton(text="🛏 الغرف المفتوحة والمتروكة", callback_data="admin_rooms")],
