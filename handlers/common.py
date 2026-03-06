@@ -806,8 +806,10 @@ def _normalize_join_code(payload: str) -> str:
 async def cmd_start_with_deeplink(message: types.Message, state: FSMContext):
     """معالجة /start مع رابط الدعوة: join_، profile_، add_"""
     text = (message.text or "").strip()
-    # استخراج الـ payload: كل ما بعد "/start" (مع أو بدون مسافة) ليعمل الرابط من القناة
-    payload = unquote(text[6:].strip()) if text.startswith("/start") and len(text) > 6 else ""
+    # استخراج الـ payload: كل ما بعد "/start" ليعمل من روابط القناة (أزرار حساب اللاعب، العب معي، لايك)
+    payload = ""
+    if text.startswith("/start") and len(text) > 6:
+        payload = unquote(text[6:].strip())
     if payload:
         logger.info("cmd_start: payload=%s uid=%s", payload[:50], message.from_user.id)
     parts = ["/start", payload] if payload else [text]
@@ -847,7 +849,11 @@ async def cmd_start_with_deeplink(message: types.Message, state: FSMContext):
                             jc = r2[0].get("join_code")
                             new_kb = _channel_post_buttons(uid_pub, add_p, jc, post_id=post_id, likes_count=new_count)
                             if new_kb:
-                                await message.bot.edit_message_reply_markup(chat_id=ch_id, message_id=msg_id, reply_markup=new_kb)
+                                try:
+                                    _ch = int(ch_id) if str(ch_id).lstrip("-").isdigit() else ch_id
+                                    await message.bot.edit_message_reply_markup(chat_id=_ch, message_id=msg_id, reply_markup=new_kb)
+                                except Exception:
+                                    pass
                     except Exception:
                         pass
                     await message.answer(f"❤️ تم! عدد لايكات المنشور: {new_count}")
@@ -905,8 +911,11 @@ async def cmd_start_with_deeplink(message: types.Message, state: FSMContext):
                     kb = _build_profile_kb(uid, target_id, from_channel=True)
                     await message.answer(profile_text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
                     return
-    if len(parts) >= 2 and parts[1].startswith("join_"):
-        code = _normalize_join_code(parts[1])
+                else:
+                    await message.answer("👤 اللاعب غير موجود أو حذف حسابه.")
+                    return
+    if payload.startswith("join_"):
+        code = _normalize_join_code(payload)
         if code:
             user = db_query("SELECT * FROM users WHERE user_id = %s", (message.from_user.id,))
             if user and user[0].get("is_registered"):
@@ -935,6 +944,9 @@ async def cmd_start_with_deeplink(message: types.Message, state: FSMContext):
             )
             welcome = t(uid, "welcome_new") + "\n\n" + t(uid, "invite_pending_room")
             await message.answer(welcome, reply_markup=kb)
+            return
+        else:
+            await message.answer("⚠️ رابط الانضمام غير صالح أو انتهت صلاحية الغرفة. أرسل /start للقائمة.")
             return
     uid = message.from_user.id
     try:
