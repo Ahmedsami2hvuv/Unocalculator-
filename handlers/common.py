@@ -135,6 +135,10 @@ async def channel_subscribe_callback_middleware(handler, event: types.CallbackQu
     # لا نعترض زر «تحقق» — نترك المعالج يتحقق ويفتح القائمة إن كان مشتركاً
     if getattr(event, "data", None) == "check_channel_sub":
         return await handler(event, data)
+    # أزرار اللعب (ثنائي/جماعي): نسمح بالمرور حتى لو لم يكن مشتركاً في القناة
+    cd = getattr(event, "data", None) or ""
+    if cd.startswith("pl_") or cd.startswith("cl_") or cd.startswith("rs_") or cd.startswith("challenge_") or cd.startswith("clrmul_") or cd.startswith("plmul_") or cd.startswith("colormul_"):
+        return await handler(event, data)
     user_id = event.from_user.id if event.from_user else None
     if not user_id:
         return await handler(event, data)
@@ -931,6 +935,8 @@ async def cmd_start_with_deeplink(message: types.Message, state: FSMContext):
     text = (message.text or "").strip()
     # استخراج الـ payload: كل ما بعد "/start" (مع أو بدون مسافة) ليعمل الرابط من القناة
     payload = unquote(text[6:].strip()) if text.startswith("/start") and len(text) > 6 else ""
+    if payload:
+        logger.info("cmd_start: payload=%s uid=%s", payload[:50], message.from_user.id)
     parts = ["/start", payload] if payload else [text]
     # روابط من القناة: حساب اللاعب (بروفايل)، أو لايك، أو العب معي
     if len(parts) >= 2 and payload:
