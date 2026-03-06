@@ -12,6 +12,7 @@ from aiogram import Router, types, F
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.filters import BaseFilter
 
 from database import db_query
 
@@ -38,6 +39,10 @@ class PlayerPostStates(StatesGroup):
 # قائمة انتظار النشر: في الذاكرة فقط
 _pending_post: dict = {}
 _PENDING_POST_TIMEOUT = 600  # 10 دقائق
+
+# آخر مرة فتح فيها المستخدم «نشر منشور» (للمعالجة إن فُقدت الحالة)
+_last_post_options_at: dict = {}
+_LAST_POST_OPTIONS_WINDOW = 300  # 5 دقائق
 
 
 def _get_pending_post(uid: int):
@@ -372,6 +377,7 @@ def _post_options_kb(data: dict) -> InlineKeyboardMarkup:
 async def player_post_start(c: types.CallbackQuery, state: FSMContext):
     if not _normalize_channel_target():
         return await c.answer("⚠️ نشر المنشورات غير متاح حالياً.", show_alert=True)
+    _last_post_options_at[c.from_user.id] = time.time()
     await state.set_state(PlayerPostStates.waiting_options)
     await state.update_data(post_add_profile=True, post_add_play=False)
     await c.message.edit_text(
@@ -813,3 +819,77 @@ async def player_post_receive_media(message: types.Message, state: FSMContext):
 async def player_post_unsupported(message: types.Message, state: FSMContext):
     await state.clear()
     await message.answer("⚠️ يمكنك إرسال: نص، صورة، صوت، فيديو، صورة متحركة، ملصق، أو ملف. غير ذلك غير مدعوم.")
+
+
+class _FilterPostFallback(BaseFilter):
+    """يمرّر فقط عندما الحالة ليست «نشر» لكن المستخدم فتح «نشر منشور» منذ دقائق."""
+    async def __call__(self, message: types.Message, data: dict) -> bool:
+        if not message.text or (message.text or "").strip().startswith("/"):
+            return False
+        uid = message.from_user.id if message.from_user else None
+        if not uid:
+            return False
+        state = data.get("state")
+        if not state:
+            return False
+        current = await state.get_state()
+        if current in (PlayerPostStates.waiting_options.state, PlayerPostStates.waiting_message.state):
+            return False
+        if _get_pending_post(uid):
+            return False
+        if time.time() - (_last_post_options_at.get(uid) or 0) > _LAST_POST_OPTIONS_WINDOW:
+            return False
+        if not _normalize_channel_target():
+            return False
+        return True
+
+
+# معالجة عندما فُقدت الحالة لكن المستخدم فتح «نشر منشور» منذ دقائق — نعالج الرسالة كنشر
+@router.message(F.text, _FilterPostFallback())
+async def player_post_fallback_recent(message: types.Message, state: FSMContext):
+    uid = message.from_user.id
+    chat_target = _normalize_channel_target()
+    if not chat_target:
+        return
+    text = (message.text or "").strip()
+    if len(text) > 4000:
+        return
+    ok, reason = check_post_content(text)
+    if not ok:
+        await message.answer(f"⛔ {reason}\n\nللنشر من جديد: مجتمع الأونو ← نشر منشور.")
+        return
+    await state.clear()
+    name = _get_player_name_for_post(uid, message.from_user.full_name)
+    text_to_send = f"👤 **{name}**\n\n{text}"
+    add_profile, add_play = True, False
+    join_code = _create_deferred_2p_room(uid, name) if add_play else None
+    reply_kb = _channel_post_buttons(uid, add_profile, join_code)
+    try:
+        sent = await message.bot.send_message(chat_id=chat_target, text=text_to_send, parse_mode="Markdown", reply_markup=reply_kb)
+        sent_msg_id = sent.message_id if sent else None
+    except Exception as e:
+        logger.exception("player_post fallback: send failed: %s", e)
+        await message.answer(
+            "❌ فشل النشر (الحالة انتهت لكن حاولنا النشر).\n\n"
+            "تأكد أن البوت مسؤول في القناة وله صلاحية «نشر رسائل». جرّب: مجتمع الأونو ← نشر منشور ثم أرسل رسالتك مرة واحدة.\n\nالخطأ: " + str(e).replace("'", "")[:180]
+        )
+        return
+    if sent_msg_id is not None:
+        try:
+            db_query(
+                "INSERT INTO channel_posts (channel_id, message_id, publisher_uid, add_profile, join_code) VALUES (%s, %s, %s, %s, %s)",
+                (str(chat_target), sent_msg_id, uid, bool(add_profile), join_code), commit=True
+            )
+            row = db_query("SELECT id FROM channel_posts WHERE message_id = %s AND channel_id = %s", (sent_msg_id, str(chat_target)))
+            if row:
+                new_kb = _channel_post_buttons(uid, add_profile, join_code, post_id=row[0].get("id"), likes_count=0)
+                if new_kb:
+                    await message.bot.edit_message_reply_markup(chat_id=chat_target, message_id=sent_msg_id, reply_markup=new_kb)
+        except Exception:
+            pass
+    kb_after = []
+    if PUBLISH_CHANNEL_USERNAME:
+        kb_after.append([InlineKeyboardButton(text="📢 الذهاب للقناة", url=f"https://t.me/{PUBLISH_CHANNEL_USERNAME.lstrip('@')}")])
+    kb_after.append([InlineKeyboardButton(text="🔙 رجوع للقائمة الرئيسية", callback_data="home")])
+    ch_txt = f"@{PUBLISH_CHANNEL_USERNAME.lstrip('@')}" if PUBLISH_CHANNEL_USERNAME else "القناة"
+    await message.answer("✅ تم نشر منشورك في " + ch_txt + " (تمت المعالجة تلقائياً). اضغط الزر أعلاه لمعاينة القناة.", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_after))
