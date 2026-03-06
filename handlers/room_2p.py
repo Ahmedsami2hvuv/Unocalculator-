@@ -1571,4 +1571,3 @@ async def handle_challenge(c: types.CallbackQuery):
     except Exception as e:
         print(f"Challenge Error (rs_): {e}")
         await c.answer("⚠️ حدث خطأ أثناء معالجة التحدي", show_alert=True)
-
