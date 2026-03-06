@@ -59,7 +59,7 @@ _LAST_POST_OPTIONS_WINDOW = 300  # 5 دقائق
 
 
 def _get_pending_post(uid: int):
-    """يجلب خيارات النشر المعلقة — من الذاكرة أولاً، ثم من قاعدة البيانات."""
+    """يجلب خيارات النشر المعلقة — من الذاكرة أولاً، ثم من قاعدة البيانات إن وُجدت الأعمدة."""
     if uid in _pending_post:
         t = _pending_post[uid].get("at", 0)
         if time.time() - t <= _PENDING_POST_TIMEOUT:
@@ -130,15 +130,19 @@ def _clear_pending_post_db(uid: int):
 
 
 def _set_pending_post_db(uid: int, add_profile: bool, add_play: bool):
-    """حفظ خيارات النشر المعلقة في قاعدة البيانات (للتشغيل متعدد العمال على Railway)."""
-    opts_json = json.dumps({"add_profile": add_profile, "add_play": add_play})
+    """حفظ خيارات النشر المعلقة في قاعدة البيانات (للتشغيل متعدد العمال على Railway).
+    إذا لم توجد الأعمدة pending_post_options و pending_post_at، يتم التجاهل (الذاكرة تكفي لنسخة واحدة)."""
     try:
+        opts_json = json.dumps({"add_profile": add_profile, "add_play": add_play})
         db_query(
             "UPDATE users SET pending_post_options = %s, pending_post_at = NOW() WHERE user_id = %s",
             (opts_json, uid), commit=True
         )
     except Exception as e:
-        logger.debug("_set_pending_post_db: %s", e)
+        if "pending_post_options" in str(e) or "pending_post_at" in str(e):
+            logger.info("pending_post: استخدام الذاكرة فقط (شغّل schema_additions.sql لإضافة الأعمدة)")
+        else:
+            logger.debug("_set_pending_post_db: %s", e)
 
 
 def _banned_words_path():
