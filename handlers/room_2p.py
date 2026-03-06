@@ -1365,13 +1365,14 @@ async def handle_color(c: types.CallbackQuery, state: FSMContext):
         if not room_id or not chosen_color:
             return await c.answer("⚠️ انتهت صلاحية الاختيار. العب ورقة أخرى إن أمكن.", show_alert=True)
         await c.answer()
-        card = (await state.get_data()).get('card_played') if room_id else None
-        p_idx = (await state.get_data()).get('p_idx')
+        state_data = await state.get_data()
+        card = state_data.get('card_played') if room_id else None
+        p_idx = state_data.get('p_idx')
+        pending = pending_color_data.get(room_id) if room_id else None
         if card is None or p_idx is None:
-            pending = pending_color_data.get(room_id)
-        if pending:
-            card = pending.get('card_played')
-            p_idx = pending.get('p_idx')
+            if pending:
+                card = pending.get('card_played')
+                p_idx = pending.get('p_idx')
         if card is None or p_idx is None:
             room_data = db_query("SELECT * FROM rooms WHERE room_id = %s", (room_id,))
             if not room_data:
