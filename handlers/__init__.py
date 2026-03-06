@@ -1,1 +1,2 @@
-from . import calc, common, online, stats, admin, room_2p, room_multi
+# لا تستورد هنا calc, common, admin, ... لتجنب الاستيراد الدائري مع i18n.
+# bot.py يستورد الراوترات مباشرة: from handlers.admin import router, etc.
