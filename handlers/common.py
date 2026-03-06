@@ -95,12 +95,12 @@ async def channel_subscribe_message_middleware(handler, event: types.Message, da
     user_id = event.from_user.id if event.from_user else None
     if not user_id:
         return await handler(event, data)
-    # من في وضع «انتظار محتوى المنشور» نسمح بمرور رسالته حتى يصل لمعالج النشر
+    # من في وضع «نشر منشور» (خيارات أو انتظار الرسالة) نسمح بمرور رسالته حتى يصل لمعالج النشر
     state = data.get("state")
     if state:
         try:
             s = await state.get_state()
-            if s and "waiting_message" in (s or ""):
+            if s and ("waiting_message" in (s or "") or "waiting_options" in (s or "")):
                 return await handler(event, data)
         except Exception:
             pass
@@ -3952,7 +3952,7 @@ def _channel_post_buttons(publisher_uid: int, add_profile: bool, join_code: str 
 
 @router.message(PlayerPostStates.waiting_options, F.text)
 async def player_post_receive_text_from_options(message: types.Message, state: FSMContext):
-    """إرسال مباشر من شاشة الخيارات: نشر عادي أو نشر فوز حسب وجود share_replay_id."""
+    """استقبال نص المنشور مباشرة من شاشة الخيارات (بدون نقر تم): ينشر فوراً في القناة."""
     uid = message.from_user.id
     data = await state.get_data()
     share_replay_id = data.get("share_replay_id")
