@@ -459,7 +459,9 @@ async def color_timeout_2p(room_id, bot, player_id):
 
 
 async def background_auto_draw(room_id, bot, curr_idx):
-    """دالة السحب التلقائي: تعرض التنبيه مرة واحدة، تنتظر 5 ثوانٍ، ثم تسحب ورقة (بدون تعديل الرسالة كل ثانية لتفادي حد التعديل أو توقف الواجهة)."""
+    """سحب تلقائي بعد 5 ثوانٍ مع عدّ تنازلي يتحرك في رسالة منفصلة."""
+    countdown_msg_id = None
+    countdown_chat_id = None
     try:
         cancel_auto_draw_task(room_id)
 
@@ -469,20 +471,49 @@ async def background_auto_draw(room_id, bot, curr_idx):
         p_id = players[curr_idx]['user_id']
         p_name = players[curr_idx].get('player_name') or "لاعب"
 
-        # عرض التنبيه مرة واحدة فقط ثم انتظار 5 ثوانٍ (لا نعدّل الرسالة كل ثانية — يمنع توقف العد أو حد التعديل)
+        # تحديث واجهة اللعب مرة واحدة بالتنبيه
         await send_or_update_game_ui(
             room_id, bot, p_id,
             remaining_seconds=5,
-            alert_text="⏳ ما عندك ورقة مناسبة! راح اسحبلك تلقائياً بعد 5 ثواني..."
+            alert_text="⏳ ما عندك ورقة مناسبة! راح اسحبلك تلقائياً..."
         )
-        await asyncio.sleep(5)
+
+        # رسالة منفصلة للعدّ التنازلي (5→4→3→2→1) كي تتحرك دون تعديل رسالة اللعب
+        for sec in range(5, 0, -1):
+            try:
+                txt = f"⏳ السحب التلقائي خلال {sec} ثواني..."
+                if countdown_msg_id and countdown_chat_id:
+                    await bot.edit_message_text(
+                        chat_id=countdown_chat_id,
+                        message_id=countdown_msg_id,
+                        text=txt
+                    )
+                else:
+                    msg = await bot.send_message(p_id, txt)
+                    countdown_msg_id = msg.message_id
+                    countdown_chat_id = p_id
+            except Exception:
+                if not countdown_msg_id:
+                    msg = await bot.send_message(p_id, f"⏳ السحب التلقائي خلال {sec} ثواني...")
+                    countdown_msg_id = msg.message_id
+                    countdown_chat_id = p_id
+            await asyncio.sleep(1)
+
+        # حذف رسالة العدّ
+        if countdown_msg_id and countdown_chat_id:
+            try:
+                await bot.delete_message(countdown_chat_id, countdown_msg_id)
+            except Exception:
+                pass
 
         # التحقق من أن اللاعب لا يزال في نفس الدور
         room_data = db_query("SELECT * FROM rooms WHERE room_id = %s", (room_id,))
-        if not room_data: 
+        if not room_data:
+            await refresh_ui_2p(room_id, bot)
             return
         room = room_data[0]
         if room['turn_index'] != curr_idx:
+            await refresh_ui_2p(room_id, bot)
             return
 
         deck = ensure_deck_from_discard(room_id, room)
@@ -495,19 +526,16 @@ async def background_auto_draw(room_id, bot, curr_idx):
         new_card = deck.pop(0)
         curr_hand.append(new_card)
 
-        # تحديث قاعدة البيانات
-        db_query("UPDATE room_players SET hand = %s WHERE user_id = %s", 
+        db_query("UPDATE room_players SET hand = %s WHERE user_id = %s",
                  (json.dumps(curr_hand), p_id), commit=True)
-        db_query("UPDATE rooms SET deck = %s WHERE room_id = %s", 
+        db_query("UPDATE rooms SET deck = %s WHERE room_id = %s",
                  (json.dumps(deck), room_id), commit=True)
 
-        # التحقق من صلاحية الورقة الجديدة
         if check_validity(new_card, room['top_card'], room['current_color']):
             await refresh_ui_2p(room_id, bot, {p_id: f"✅ سحبت ({new_card}) وتشتغل! الك 20 ثانية."})
         else:
-            # الورقة غير صالحة: نمرر الدور للخصم فوراً
             next_turn = (curr_idx + 1) % 2
-            db_query("UPDATE rooms SET turn_index = %s WHERE room_id = %s", 
+            db_query("UPDATE rooms SET turn_index = %s WHERE room_id = %s",
                      (next_turn, room_id), commit=True)
             opp_id = players[next_turn]['user_id']
             alerts = {
@@ -517,12 +545,25 @@ async def background_auto_draw(room_id, bot, curr_idx):
             await refresh_ui_2p(room_id, bot, alerts)
 
     except asyncio.CancelledError:
-        pass
+        if countdown_msg_id and countdown_chat_id:
+            try:
+                await bot.delete_message(countdown_chat_id, countdown_msg_id)
+            except Exception:
+                pass
+        await refresh_ui_2p(room_id, bot)
+        raise
     except Exception as e:
         print(f"Error in background_auto_draw: {e}")
+        try:
+            await refresh_ui_2p(room_id, bot)
+        except Exception:
+            pass
     finally:
         if room_id in auto_draw_tasks:
-            del auto_draw_tasks[room_id]
+            try:
+                del auto_draw_tasks[room_id]
+            except Exception:
+                pass
             
 async def send_temp_message_and_delete(bot, user_id, text, delay=1.5):
     msg = await bot.send_message(user_id, text)
