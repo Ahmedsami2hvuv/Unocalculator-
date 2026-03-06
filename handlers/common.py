@@ -28,17 +28,30 @@ BOT_USERNAME = os.getenv("BOT_USERNAME", "").strip() or None
 # تحميل channel_config من نفس مجلد هذا الملف (يعمل أينما شغّلت البوت)
 _cc = None
 _handlers_dir = os.path.dirname(os.path.abspath(__file__))
-BOT_INFO_FILE = os.path.join(_handlers_dir, "BOT_INFO_MESSAGE.md")
+_project_root = os.path.dirname(_handlers_dir)
+BOT_INFO_FILENAME = "BOT_INFO_MESSAGE.md"
+# مسارات محتملة للملف (حتى يعمل مع التشغيل من الجذر أو من داخل الحاوية)
+BOT_INFO_CANDIDATES = [
+    os.path.join(_handlers_dir, BOT_INFO_FILENAME),
+    os.path.join(_project_root, BOT_INFO_FILENAME),
+    os.path.join(_project_root, "handlers", BOT_INFO_FILENAME),
+    os.path.join(os.getcwd(), "handlers", BOT_INFO_FILENAME),
+    os.path.join(os.getcwd(), BOT_INFO_FILENAME),
+]
 
 
 def _read_bot_info_message():
     """يقرأ نص رسالة معلومات البوت من الملف BOT_INFO_MESSAGE.md إن وُجد."""
-    try:
-        if os.path.isfile(BOT_INFO_FILE):
-            with open(BOT_INFO_FILE, "r", encoding="utf-8") as f:
-                return f.read().strip()
-    except Exception:
-        pass
+    for path in BOT_INFO_CANDIDATES:
+        try:
+            if os.path.isfile(path):
+                with open(path, "r", encoding="utf-8") as f:
+                    out = f.read().strip()
+                if out:
+                    return out
+        except Exception as e:
+            logger.debug("BOT_INFO_MESSAGE: could not read %s: %s", path, e)
+    logger.warning("BOT_INFO_MESSAGE: file not found in any of %s", BOT_INFO_CANDIDATES)
     return None
 _config_path = os.path.join(_handlers_dir, "channel_config.py")
 if os.path.isfile(_config_path):
