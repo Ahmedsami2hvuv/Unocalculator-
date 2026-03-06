@@ -57,6 +57,27 @@ _PENDING_POST_TIMEOUT = 600  # 10 دقائق
 _last_post_options_at: dict = {}
 _LAST_POST_OPTIONS_WINDOW = 300  # 5 دقائق
 
+# هل أعمدة pending_post في users موجودة؟ None=لم نتحقق بعد، True/False بعد التحقق
+_pending_post_db_available: bool | None = None
+
+
+def _check_pending_post_columns():
+    """التحقق مرة واحدة من وجود أعمدة pending_post في جدول users (بدون استدعائها)."""
+    global _pending_post_db_available
+    if _pending_post_db_available is not None:
+        return _pending_post_db_available
+    try:
+        r = db_query(
+            "SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'users' AND column_name = 'pending_post_options' LIMIT 1",
+            ()
+        )
+        _pending_post_db_available = bool(r and len(r) > 0)
+    except Exception:
+        _pending_post_db_available = False
+    if not _pending_post_db_available:
+        logger.info("pending_post: استخدام الذاكرة فقط — شغّل run_channel_migration.sql لإضافة الأعمدة")
+    return _pending_post_db_available
+
 
 def _get_pending_post(uid: int):
     """يجلب خيارات النشر المعلقة — من الذاكرة أولاً، ثم من قاعدة البيانات إن وُجدت الأعمدة."""
@@ -65,7 +86,8 @@ def _get_pending_post(uid: int):
         if time.time() - t <= _PENDING_POST_TIMEOUT:
             return _pending_post[uid]
         _pending_post.pop(uid, None)
-    # من قاعدة البيانات (يعمل عند تشغيل أكثر من instance على Railway)
+    if not _check_pending_post_columns():
+        return None
     try:
         row = db_query(
             "SELECT pending_post_options, pending_post_at FROM users WHERE user_id = %s AND pending_post_options IS NOT NULL",
@@ -93,9 +115,10 @@ def _get_and_clear_pending_post(uid: int):
     """يجلب خيارات النشر ويحذفها (من الذاكرة ومن قاعدة البيانات)."""
     opts = _pending_post.pop(uid, None)
     if opts and (time.time() - opts.get("at", 0)) <= _PENDING_POST_TIMEOUT:
-        _clear_pending_post_db(uid)  # مسح من DB أيضاً لضمان التزامن
+        _clear_pending_post_db(uid)
         return opts
-    # من قاعدة البيانات
+    if not _check_pending_post_columns():
+        return None
     try:
         row = db_query(
             "SELECT pending_post_options, pending_post_at FROM users WHERE user_id = %s AND pending_post_options IS NOT NULL",
@@ -120,6 +143,8 @@ def _get_and_clear_pending_post(uid: int):
 
 def _clear_pending_post_db(uid: int):
     """مسح خيارات النشر المعلقة من قاعدة البيانات."""
+    if not _check_pending_post_columns():
+        return
     try:
         db_query(
             "UPDATE users SET pending_post_options = NULL, pending_post_at = NULL WHERE user_id = %s",
@@ -130,8 +155,9 @@ def _clear_pending_post_db(uid: int):
 
 
 def _set_pending_post_db(uid: int, add_profile: bool, add_play: bool):
-    """حفظ خيارات النشر المعلقة في قاعدة البيانات (للتشغيل متعدد العمال على Railway).
-    إذا لم توجد الأعمدة pending_post_options و pending_post_at، يتم التجاهل (الذاكرة تكفي لنسخة واحدة)."""
+    """حفظ خيارات النشر المعلقة في قاعدة البيانات (للتشغيل متعدد العمال على Railway)."""
+    if not _check_pending_post_columns():
+        return
     try:
         opts_json = json.dumps({"add_profile": add_profile, "add_play": add_play})
         db_query(
@@ -139,10 +165,7 @@ def _set_pending_post_db(uid: int, add_profile: bool, add_play: bool):
             (opts_json, uid), commit=True
         )
     except Exception as e:
-        if "pending_post_options" in str(e) or "pending_post_at" in str(e):
-            logger.info("pending_post: استخدام الذاكرة فقط (شغّل schema_additions.sql لإضافة الأعمدة)")
-        else:
-            logger.debug("_set_pending_post_db: %s", e)
+        logger.debug("_set_pending_post_db: %s", e)
 
 
 def _banned_words_path():
@@ -950,13 +973,15 @@ async def player_post_unsupported(message: types.Message, state: FSMContext):
 
 class _FilterPostFallback(BaseFilter):
     """يمرّر فقط عندما الحالة ليست «نشر» لكن المستخدم فتح «نشر منشور» منذ دقائق."""
-    async def __call__(self, message: types.Message, data: dict) -> bool:
-        if not message.text or (message.text or "").strip().startswith("/"):
+    async def __call__(self, *args, **kwargs) -> bool:
+        message = args[0] if args else kwargs.get("event")
+        data = args[1] if len(args) > 1 else kwargs.get("data", {})
+        if not message or not getattr(message, "text", None) or (message.text or "").strip().startswith("/"):
             return False
-        uid = message.from_user.id if message.from_user else None
+        uid = message.from_user.id if getattr(message, "from_user", None) else None
         if not uid:
             return False
-        state = data.get("state")
+        state = data.get("state") if isinstance(data, dict) else None
         if not state:
             return False
         current = await state.get_state()
@@ -973,10 +998,12 @@ class _FilterPostFallback(BaseFilter):
 
 class _FilterPostFallbackChannelMissing(BaseFilter):
     """يمرّر عندما المستخدم فتح «نشر منشور» منذ دقائق لكن القناة غير مضبوطة — لردّ توجيهي."""
-    async def __call__(self, message: types.Message, data: dict) -> bool:
-        if not message.text or (message.text or "").strip().startswith("/"):
+    async def __call__(self, *args, **kwargs) -> bool:
+        message = args[0] if args else kwargs.get("event")
+        data = args[1] if len(args) > 1 else kwargs.get("data", {})
+        if not message or not getattr(message, "text", None) or (message.text or "").strip().startswith("/"):
             return False
-        uid = message.from_user.id if message.from_user else None
+        uid = message.from_user.id if getattr(message, "from_user", None) else None
         if not uid:
             return False
         if time.time() - (_last_post_options_at.get(uid) or 0) > _LAST_POST_OPTIONS_WINDOW:
