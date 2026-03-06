@@ -28,8 +28,7 @@ BOT_USERNAME = os.getenv("BOT_USERNAME", "").strip() or None
 # تحميل channel_config من نفس مجلد هذا الملف (يعمل أينما شغّلت البوت)
 _cc = None
 _handlers_dir = os.path.dirname(os.path.abspath(__file__))
-_project_root = os.path.dirname(_handlers_dir)
-BOT_INFO_FILE = os.path.join(_project_root, "BOT_INFO_MESSAGE.md")
+BOT_INFO_FILE = os.path.join(_handlers_dir, "BOT_INFO_MESSAGE.md")
 
 
 def _read_bot_info_message():
