@@ -200,9 +200,13 @@ async def channel_subscribe_callback_middleware(handler, event: types.CallbackQu
     # لا نعترض زر «تحقق» — نترك المعالج يتحقق ويفتح القائمة إن كان مشتركاً
     if getattr(event, "data", None) == "check_channel_sub":
         return await handler(event, data)
-    # أزرار اللعب (ثنائي/جماعي): نسمح بالمرور حتى لو لم يكن مشتركاً في القناة
     cd = getattr(event, "data", None) or ""
+    # أزرار اللعب (ثنائي/جماعي): نسمح بالمرور حتى لو لم يكن مشتركاً في القناة
     if cd.startswith("pl_") or cd.startswith("cl_") or cd.startswith("rs_") or cd.startswith("challenge_") or cd.startswith("clrmul_") or cd.startswith("plmul_") or cd.startswith("colormul_"):
+        return await handler(event, data)
+    # مجتمع الأونو والنشر: نسمح بالدخول دائماً (القائمة، نشر منشور، منشوراتي، إلخ)
+    if cd in ("community_uno_menu", "player_post_start", "post_toggle_profile", "post_toggle_play",
+              "post_ready_send", "post_back", "my_posts_list", "player_posts_channel") or cd.startswith("admin_"):
         return await handler(event, data)
     user_id = event.from_user.id if event.from_user else None
     if not user_id:
