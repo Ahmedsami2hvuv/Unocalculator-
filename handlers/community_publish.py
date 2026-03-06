@@ -338,6 +338,11 @@ async def share_result_to_channel(c: types.CallbackQuery, state: FSMContext):
     if not rdata:
         return await c.answer("⚠️ انتهت صلاحية النشر. جرّب النشر مباشرة بعد انتهاء الجولة.", show_alert=True)
     winner_id = rdata.get("winner_id")
+    if winner_id is not None:
+        try:
+            winner_id = int(winner_id)
+        except (TypeError, ValueError):
+            winner_id = None
     if not winner_id or winner_id != c.from_user.id:
         return await c.answer("⚠️ غير مصرح.", show_alert=True)
     await state.set_state(PlayerPostStates.waiting_options)
@@ -536,15 +541,21 @@ async def player_post_receive_text_from_options(message: types.Message, state: F
             return await message.answer("⚠️ انتهت صلاحية النشر. جرّب النشر مباشرة بعد انتهاء الجولة.")
         summary = rdata.get("summary", "🏁 انتهت الجولة!")
         winner_id = rdata.get("winner_id")
+        if winner_id is not None:
+            try:
+                winner_id = int(winner_id)
+            except (TypeError, ValueError):
+                winner_id = None
         w_name = next((pname for pid, pname in (rdata.get("players") or []) if pid == winner_id), "لاعب")
         total_pts = 0
-        try:
-            pr = db_query("SELECT online_points FROM users WHERE user_id = %s", (winner_id,))
-            if pr:
-                total_pts = int(pr[0].get("online_points") or 0)
-        except Exception:
-            pass
-        points_line = f"\n⭐ **مجموع نقاطه:** {total_pts}" if winner_id else ""
+        if winner_id is not None:
+            try:
+                pr = db_query("SELECT online_points FROM users WHERE user_id = %s", (winner_id,))
+                if pr:
+                    total_pts = int(pr[0].get("online_points") or 0)
+            except Exception:
+                pass
+        points_line = f"\n⭐ **مجموع نقاطه:** {total_pts}" if winner_id is not None else ""
         text_to_send = f"{summary}{points_line}\n\n💬 **{w_name}:** {text}"
         join_code = None
         if add_play:
