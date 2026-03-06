@@ -613,11 +613,14 @@ async def player_post_receive_text_from_options(message: types.Message, state: F
         sent_msg_id = sent.message_id if sent else None
     except Exception as e:
         logger.exception("player_post: send_message failed: %s", e)
+        err_str = str(e).replace("'", "").strip()[:220]
         await state.set_state(PlayerPostStates.waiting_options)
         await state.update_data(post_add_profile=add_profile, post_add_play=add_play)
         await message.answer(
-            "❌ فشل النشر.\n\nتأكد أن البوت مضاف في القناة كـ **مسؤول** وله صلاحية «نشر رسائل».\n\nالخطأ: " + str(e).replace(chr(39), "").strip()[:220]
-            + "\n\nيمكنك إرسال رسالة أخرى للمحاولة."
+            "❌ فشل النشر.\n\n"
+            "• تأكد أن البوت مضاف في القناة كـ **مسؤول** وله صلاحية «نشر رسائل».\n"
+            "• تأكد أن المتغيرين PUBLISH_CHANNEL_ID و PUBLISH_CHANNEL_USERNAME في Variables يطابقان قناتك (مثلاً مجتمع الاونو).\n\n"
+            "الخطأ: " + err_str + "\n\nيمكنك إرسال رسالة أخرى للمحاولة."
         )
         return
     if sent_msg_id is not None:
