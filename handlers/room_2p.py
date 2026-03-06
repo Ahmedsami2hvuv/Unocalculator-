@@ -1013,8 +1013,40 @@ async def bot_play_turn(room_id, bot):
             random.shuffle(deck)
             db_query("UPDATE rooms SET deck = %s WHERE room_id = %s", (json.dumps(deck), room_id), commit=True)
 
+        opp_hand = safe_load(players[opp_idx]['hand'])
+        opp_said_uno = str(players[opp_idx].get('said_uno', False)).lower() in ['true', '1']
+        if len(opp_hand) == 1 and not opp_said_uno:
+            for _ in range(2):
+                if not deck:
+                    room = db_query("SELECT * FROM rooms WHERE room_id = %s", (room_id,))[0]
+                    deck = ensure_deck_from_discard(room_id, room)
+                if deck:
+                    opp_hand.append(deck.pop(0))
+            db_query("UPDATE room_players SET hand = %s, said_uno = FALSE WHERE user_id = %s", (json.dumps(opp_hand), opp_id), commit=True)
+            db_query("UPDATE rooms SET deck = %s WHERE room_id = %s", (json.dumps(deck), room_id), commit=True)
+            try:
+                await bot.send_message(opp_id, "🪤 **البوت صادك!** سحبت ورقتين لأنك نسيت تصيح اونو.\n⏳ اللعبة تكمل خلال 5 ثواني...", parse_mode="Markdown")
+            except Exception:
+                pass
+            await asyncio.sleep(5)
+            await refresh_ui_2p(room_id, bot, {opp_id: "🪤 البوت صادك! سحبت ورقتين. دور البوت يلعب..."})
+            room_data = db_query("SELECT * FROM rooms WHERE room_id = %s", (room_id,))
+            if not room_data or room_data[0]['status'] != 'playing':
+                return
+            room = room_data[0]
+            players = get_ordered_players(room_id)
+            deck = ensure_deck_from_discard(room_id, room)
+            bot_hand = safe_load(players[p_idx]['hand'])
+            top_card = room['top_card']
+            current_color = room['current_color']
+
         valid = [c for c in bot_hand if check_validity(c, top_card, current_color)]
         if not valid:
+            try:
+                await bot.send_message(opp_id, "🤖 البوت ما عنده ورقة مناسبة. راح يسحب ورقة خلال 5 ثواني...", parse_mode="Markdown")
+            except Exception:
+                pass
+            await asyncio.sleep(5)
             if deck:
                 new_card = deck.pop(0)
                 bot_hand.append(new_card)
