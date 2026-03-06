@@ -567,7 +567,6 @@ async def background_auto_draw(room_id, bot, curr_idx):
                 await bot.delete_message(countdown_chat_id, countdown_msg_id)
             except Exception:
                 pass
-        await refresh_ui_2p(room_id, bot)
         raise
     except Exception as e:
         print(f"Error in background_auto_draw: {e}")
@@ -1231,7 +1230,9 @@ async def handle_play(c: types.CallbackQuery, state: FSMContext):
         parts = c.data.split("_")
         idx = int(parts[-1])
         room_id = "_".join(parts[1:-1])
-    
+        cancel_auto_draw_task(room_id)
+        cancel_timer(room_id)
+
         room_data = db_query("SELECT * FROM rooms WHERE room_id = %s", (room_id,))
         if not room_data:
             return await c.answer("⚠️ الغرفة غير موجودة", show_alert=True)
@@ -1241,8 +1242,6 @@ async def handle_play(c: types.CallbackQuery, state: FSMContext):
         if players[p_idx]['user_id'] != c.from_user.id:
             return await c.answer("❌ مو دورك! انتظر الخصم يلعب.", show_alert=True)
 
-        cancel_auto_draw_task(room_id)
-        cancel_timer(room_id)
         await asyncio.sleep(0)
 
         hand = sort_hand(safe_load(players[p_idx]['hand']))
@@ -1374,6 +1373,8 @@ async def handle_color(c: types.CallbackQuery, state: FSMContext):
             chosen_color = ""
         if not room_id or not chosen_color:
             return await c.answer("⚠️ انتهت صلاحية الاختيار. العب ورقة أخرى إن أمكن.", show_alert=True)
+        cancel_auto_draw_task(room_id)
+        cancel_timer(room_id)
         await c.answer()
         state_data = await state.get_data()
         card = state_data.get('card_played') if room_id else None
@@ -1500,6 +1501,8 @@ async def handle_challenge_decision(c: types.CallbackQuery):
         data = c.data.split("_")
         decision = data[1]
         room_id = data[2]
+        cancel_auto_draw_task(room_id)
+        cancel_timer(room_id)
 
         if room_id in challenge_timers:
             challenge_timers[room_id].cancel()
@@ -1592,6 +1595,8 @@ async def handle_challenge_decision(c: types.CallbackQuery):
 async def handle_uno(c: types.CallbackQuery):
     try:
         room_id = c.data.split("_")[1]
+        cancel_auto_draw_task(room_id)
+        cancel_timer(room_id)
         db_query("UPDATE room_players SET said_uno = TRUE WHERE room_id = %s AND user_id = %s", (room_id, c.from_user.id), commit=True)
         players = get_ordered_players(room_id)
         opp = next((p for p in players if p['user_id'] != c.from_user.id), None)
@@ -1617,6 +1622,8 @@ async def handle_uno(c: types.CallbackQuery):
 async def handle_catch(c: types.CallbackQuery):
     try:
         room_id = c.data.split("_")[1]
+        cancel_auto_draw_task(room_id)
+        cancel_timer(room_id)
         players = get_ordered_players(room_id)
         opp = next(p for p in players if p['user_id'] != c.from_user.id)
         opp_h = safe_load(opp['hand'])
@@ -1656,17 +1663,20 @@ async def handle_catch(c: types.CallbackQuery):
 @router.callback_query(F.data.startswith("ex_"))
 async def ask_exit(c: types.CallbackQuery):
     rid = c.data.split("_")[1]
+    cancel_auto_draw_task(rid)
+    cancel_timer(rid)
     kb = [[InlineKeyboardButton(text="✅ نعم", callback_data=f"cf_ex_{rid}"), InlineKeyboardButton(text="❌ لا", callback_data=f"cn_ex_{rid}")]]
     await c.message.edit_text("🚪 هل أنت متأكد من الانسحاب؟", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
 
 @router.callback_query(F.data.startswith("cf_ex_"))
 async def confirm_exit(c: types.CallbackQuery):
     rid = c.data.split("_")[2]
+    cancel_auto_draw_task(rid)
+    cancel_timer(rid)
     try:
         await c.message.delete()
     except:
         pass
-    cancel_timer(rid)
     players = get_ordered_players(rid)
     room_data = db_query("SELECT * FROM rooms WHERE room_id = %s", (rid,))
     room = room_data[0] if room_data else {'max_players': 2, 'score_limit': 0}
@@ -1683,6 +1693,8 @@ async def confirm_exit(c: types.CallbackQuery):
 @router.callback_query(F.data.startswith("cn_ex_"))
 async def cancel_exit(c: types.CallbackQuery):
     rid = c.data.split("_")[2]
+    cancel_auto_draw_task(rid)
+    cancel_timer(rid)
     try:
         await c.message.delete()
     except:
@@ -1721,10 +1733,12 @@ async def handle_challenge(c: types.CallbackQuery):
     """
     try:
         parts = c.data.split("_")
-        cancel_challenge_timer(parts[2])
-
         decision = parts[1]
         room_id = parts[2]
+        cancel_auto_draw_task(room_id)
+        cancel_timer(room_id)
+        cancel_challenge_timer(room_id)
+
 
         room_data = db_query("SELECT * FROM rooms WHERE room_id = %s", (room_id,))
         if not room_data:
