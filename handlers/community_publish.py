@@ -49,7 +49,7 @@ class PlayerPostStates(StatesGroup):
     waiting_message = State()
 
 
-# قائمة انتظار النشر: في الذاكرة فقط
+# قائمة انتظار النشر: الذاكرة + قاعدة البيانات (لتعمل مع Railway عند تشغيل أكثر من worker)
 _pending_post: dict = {}
 _PENDING_POST_TIMEOUT = 600  # 10 دقائق
 
@@ -59,19 +59,86 @@ _LAST_POST_OPTIONS_WINDOW = 300  # 5 دقائق
 
 
 def _get_pending_post(uid: int):
+    """يجلب خيارات النشر المعلقة — من الذاكرة أولاً، ثم من قاعدة البيانات."""
     if uid in _pending_post:
         t = _pending_post[uid].get("at", 0)
         if time.time() - t <= _PENDING_POST_TIMEOUT:
             return _pending_post[uid]
         _pending_post.pop(uid, None)
+    # من قاعدة البيانات (يعمل عند تشغيل أكثر من instance على Railway)
+    try:
+        row = db_query(
+            "SELECT pending_post_options, pending_post_at FROM users WHERE user_id = %s AND pending_post_options IS NOT NULL",
+            (uid,)
+        )
+        if row and row[0].get("pending_post_options") and row[0].get("pending_post_at"):
+            try:
+                opts = json.loads(row[0]["pending_post_options"])
+                created = row[0]["pending_post_at"]
+                if hasattr(created, "timestamp"):
+                    ts = created.timestamp()
+                else:
+                    ts = time.time()  # fallback
+                if time.time() - ts <= _PENDING_POST_TIMEOUT:
+                    opts["at"] = ts
+                    return opts
+            except (json.JSONDecodeError, TypeError):
+                pass
+    except Exception as e:
+        logger.debug("_get_pending_post db: %s", e)
     return None
 
 
 def _get_and_clear_pending_post(uid: int):
+    """يجلب خيارات النشر ويحذفها (من الذاكرة ومن قاعدة البيانات)."""
     opts = _pending_post.pop(uid, None)
     if opts and (time.time() - opts.get("at", 0)) <= _PENDING_POST_TIMEOUT:
+        _clear_pending_post_db(uid)  # مسح من DB أيضاً لضمان التزامن
         return opts
+    # من قاعدة البيانات
+    try:
+        row = db_query(
+            "SELECT pending_post_options, pending_post_at FROM users WHERE user_id = %s AND pending_post_options IS NOT NULL",
+            (uid,)
+        )
+        if row and row[0].get("pending_post_options") and row[0].get("pending_post_at"):
+            try:
+                opts = json.loads(row[0]["pending_post_options"])
+                created = row[0]["pending_post_at"]
+                ts = created.timestamp() if hasattr(created, "timestamp") else time.time()
+                if time.time() - ts <= _PENDING_POST_TIMEOUT:
+                    opts["at"] = ts
+                    _clear_pending_post_db(uid)
+                    return opts
+            except (json.JSONDecodeError, TypeError):
+                pass
+        _clear_pending_post_db(uid)
+    except Exception as e:
+        logger.debug("_get_and_clear_pending_post db: %s", e)
     return None
+
+
+def _clear_pending_post_db(uid: int):
+    """مسح خيارات النشر المعلقة من قاعدة البيانات."""
+    try:
+        db_query(
+            "UPDATE users SET pending_post_options = NULL, pending_post_at = NULL WHERE user_id = %s",
+            (uid,), commit=True
+        )
+    except Exception as e:
+        logger.debug("_clear_pending_post_db: %s", e)
+
+
+def _set_pending_post_db(uid: int, add_profile: bool, add_play: bool):
+    """حفظ خيارات النشر المعلقة في قاعدة البيانات (للتشغيل متعدد العمال على Railway)."""
+    opts_json = json.dumps({"add_profile": add_profile, "add_play": add_play})
+    try:
+        db_query(
+            "UPDATE users SET pending_post_options = %s, pending_post_at = NOW() WHERE user_id = %s",
+            (opts_json, uid), commit=True
+        )
+    except Exception as e:
+        logger.debug("_set_pending_post_db: %s", e)
 
 
 def _banned_words_path():
@@ -145,6 +212,11 @@ async def player_post_receive_text_pending(message: types.Message, state: FSMCon
     logger.info("player_post_receive_text_pending: processing uid=%s", uid)
     opts = _get_and_clear_pending_post(uid)
     if not opts:
+        await state.clear()
+        await message.answer(
+            "⏱ انتهت مهلة النشر (10 دقائق).\n\nمن فضلك ادخل من جديد: **مجتمع الأونو** ← **نشر منشور** ثم أرسل رسالتك خلال 10 دقائق.",
+            parse_mode="Markdown"
+        )
         return
     await state.clear()
     add_profile = opts.get("add_profile", True)
@@ -208,6 +280,11 @@ async def player_post_receive_media_pending(message: types.Message, state: FSMCo
     uid = message.from_user.id
     opts = _get_and_clear_pending_post(uid)
     if not opts:
+        await state.clear()
+        await message.answer(
+            "⏱ انتهت مهلة النشر (10 دقائق).\n\nمن فضلك ادخل من جديد: **مجتمع الأونو** ← **نشر منشور** ثم أرسل ميديا خلال 10 دقائق.",
+            parse_mode="Markdown"
+        )
         return
     await state.clear()
     add_profile = opts.get("add_profile", True)
@@ -474,6 +551,7 @@ async def post_ready_send(c: types.CallbackQuery, state: FSMContext):
         )
     except Exception as e:
         logger.warning("post_ready_send: %s", e)
+    _set_pending_post_db(uid, add_profile, add_play)
     await state.set_state(PlayerPostStates.waiting_message)
     await c.message.edit_text(
         "📢 أرسل الآن النص أو الصور أو الصوت أو الفيديو أو الملصقات أو أي ميديا للنشر في القناة.\n\n⚠️ لا يُسمح بنشر أرقام هواتف أو كلمات تخالف المعايير."
