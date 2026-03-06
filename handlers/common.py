@@ -3416,12 +3416,22 @@ async def show_leaderboard(c: types.CallbackQuery):
     if not rows:
         text = t(uid, "leaderboard_title") + "\n\n" + t(uid, "leaderboard_empty")
     else:
+        bot_user = (BOT_USERNAME or "").strip().lstrip("@")
         lines = []
         for i, r in enumerate(rows, 1):
-            name = (r.get("player_name") or "—")[:20]
+            raw_name = (r.get("player_name") or "—")[:20]
             pts = r.get("online_points") or 0
+            # جعل الاسم رابطاً أزرقاً: عند النقر يفتح بروفايل اللاعب
+            if bot_user:
+                name_safe = raw_name.replace("[", "").replace("]", "").replace("(", "").replace(")", "")
+                profile_url = f"https://t.me/{bot_user}?start=profile_{r.get('user_id')}"
+                name = f"[{name_safe}]({profile_url})"
+            else:
+                name = raw_name
             lines.append(t(uid, "leaderboard_row", rank=i, name=name, points=pts))
         text = t(uid, "leaderboard_title") + "\n\n" + "\n".join(lines)
+        if bot_user:
+            text += t(uid, "leaderboard_hint")
     kb = [
         [InlineKeyboardButton(text=t(uid, "leaderboard_friends"), callback_data="leaderboard_friends"),
          InlineKeyboardButton(text=t(uid, "leaderboard_global"), callback_data="leaderboard_global")],
