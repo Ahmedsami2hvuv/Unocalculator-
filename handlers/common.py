@@ -2262,6 +2262,7 @@ async def show_main_menu(message, name, user_id, cleanup=False, state=None, from
         [InlineKeyboardButton(text=t(uid, "btn_friends"), callback_data="social_menu")],
         [InlineKeyboardButton(text=t(uid, "btn_my_account"), callback_data="my_account"),
          InlineKeyboardButton(text=t(uid, "btn_calc"), callback_data="mode_calc")],
+        [InlineKeyboardButton(text=t(uid, "btn_bot_info"), callback_data="bot_info")],
         [InlineKeyboardButton(text=t(uid, "btn_rules"), callback_data="rules")],
         [InlineKeyboardButton(text=t(uid, "btn_leaderboard"), callback_data="leaderboard")],
         [InlineKeyboardButton(text=t(uid, "btn_change_lang"), callback_data="change_lang")],
@@ -3417,6 +3418,17 @@ async def show_rules(c: types.CallbackQuery):
     except Exception:
         pass
     
+    await c.answer()
+
+@router.callback_query(F.data == "bot_info")
+async def show_bot_info(c: types.CallbackQuery):
+    uid = c.from_user.id
+    text = t(uid, "bot_info_title") + "\n\n" + t(uid, "bot_info_text")
+    kb = [[InlineKeyboardButton(text=t(uid, "btn_back_short"), callback_data="home")]]
+    try:
+        await c.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="Markdown")
+    except Exception:
+        await c.message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="Markdown")
     await c.answer()
 
 @router.callback_query(F.data == "leaderboard")
