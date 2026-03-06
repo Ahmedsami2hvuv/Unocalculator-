@@ -2141,7 +2141,7 @@ async def view_profile_handler(c: types.CallbackQuery):
 
 
 def _build_profile_text(uid: int, t_user: dict, target_id: int) -> str:
-    """نص بروفايل اللاعب (مع الإنجازات)."""
+    """نص بروفايل اللاعب (مع الإنجازات وعدد المتابعين/المتابَعين)."""
     from datetime import datetime, timedelta
     last_seen = t_user.get("last_seen")
     if last_seen:
@@ -2154,6 +2154,10 @@ def _build_profile_text(uid: int, t_user: dict, target_id: int) -> str:
         username=t_user.get("username_key", "---"),
         points=t_user.get("online_points", 0),
         status=status)
+    # عدد متابعينه (الذين يتابعونه) وعدد الي يتابعهم (الذين هو يتابعهم)
+    followers_count, following_count = _get_follow_counts(target_id)
+    text += f"\n{t(uid, 'profile_followers_count', count=followers_count)}"
+    text += f"\n{t(uid, 'profile_following_count', count=following_count)}"
     badges = get_user_achievements(target_id)
     if badges:
         text += format_achievements_badges(uid, badges)
@@ -3222,11 +3226,8 @@ async def process_user_search(message: types.Message, state: FSMContext):
     # فحص إذا كنت تتابعه حالياً
     is_following = db_query("SELECT 1 FROM follows WHERE follower_id = %s AND following_id = %s", (uid, t_uid))
     
-    # بناء حالة الأونلاين
-    from datetime import datetime, timedelta
-    status = t(uid, "status_online") if (datetime.now() - t_user['last_seen'] < timedelta(minutes=5)) else t(uid, "status_offline", time=t_user['last_seen'].strftime("%H:%M"))
-
-    text = t(uid, "profile_title", name=t_user['player_name'], username=t_user['username_key'], points=t_user['online_points'], status=status)
+    # بناء نص البروفايل (مع عدد المتابعين وعدد من يتابعهم)
+    text = _build_profile_text(uid, t_user, t_uid)
     
     kb = []
     # زر المتابعة أو الإلغاء
