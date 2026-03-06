@@ -31,6 +31,19 @@ logger = logging.getLogger(__name__)
 router = Router(name="community_publish")
 
 
+def _html_esc(text):
+    """تهريب النص لاستخدامه داخل HTML تليجرام (تجنّب خطأ can't parse entities)."""
+    if text is None:
+        return ""
+    s = str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    return s
+
+
+def _post_text_html(name: str, body: str) -> str:
+    """نص المنشور بتنسيق HTML آمن للإرسال إلى القناة."""
+    return f"👤 <b>{_html_esc(name)}</b>\n\n{_html_esc(body)}".strip()
+
+
 class PlayerPostStates(StatesGroup):
     waiting_options = State()
     waiting_message = State()
@@ -146,7 +159,7 @@ async def player_post_receive_text_pending(message: types.Message, state: FSMCon
         await message.answer(f"⛔ {reason}")
         return
     name = _get_player_name_for_post(uid, message.from_user.full_name)
-    text_to_send = f"👤 **{name}**\n\n{text}"
+    text_to_send = _post_text_html(name, text)
     join_code = None
     if add_play:
         try:
@@ -159,24 +172,15 @@ async def player_post_receive_text_pending(message: types.Message, state: FSMCon
         return
     sent_msg_id = None
     logger.info("player_post: sending text to channel chat_id=%s (pending)", chat_target)
-    try:
-        sent = await message.bot.send_message(chat_id=chat_target, text=text_to_send, parse_mode="Markdown", reply_markup=reply_kb)
-        sent_msg_id = sent.message_id
-    except Exception as e:
-        logger.exception("player_post: send_message failed: %s", e)
-        try:
-            sent = await message.bot.send_message(chat_id=chat_target, text=text_to_send, parse_mode="Markdown")
-            sent_msg_id = sent.message_id
-        except Exception as e2:
-            logger.exception("player_post: send without buttons failed: %s", e2)
-            err_preview = str(e2).replace("'", "").strip()[:180]
-            await message.answer(
-                "❌ فشل النشر.\n\n"
-                "• تأكد أن البوت **مضاف في القناة كمسؤول** وله صلاحية «نشر رسائل».\n"
-                "• تأكد أن معرف القناة صحيح (PUBLISH_CHANNEL_ID أو يوزر القناة).\n\n"
-                "الخطأ: " + err_preview
-            )
-            return
+    sent_msg_id, err = await _send_to_channel_safe(message.bot, chat_target, text_to_send, reply_markup=reply_kb)
+    if err:
+        await message.answer(
+            "❌ فشل النشر.\n\n"
+            "• تأكد أن البوت **مضاف في القناة كمسؤول** وله صلاحية «نشر رسائل».\n"
+            "• تأكد أن معرف القناة صحيح (PUBLISH_CHANNEL_ID أو يوزر القناة).\n\n"
+            "الخطأ: " + err[:180]
+        )
+        return
     if sent_msg_id is not None:
         try:
             row = db_query(
@@ -285,46 +289,68 @@ def _normalize_channel_target():
     return None
 
 
+async def _send_to_channel_safe(bot, ch, text_html: str, reply_markup=None, **send_kw):
+    """إرسال نص إلى القناة بتنسيق HTML مع إعادة محاولة بدون تنسيق عند الفشل."""
+    kwargs = {"parse_mode": "HTML", **send_kw}
+    if reply_markup is not None:
+        kwargs["reply_markup"] = reply_markup
+    try:
+        sent = await bot.send_message(ch, text_html, **kwargs)
+        return sent.message_id, None
+    except Exception as e1:
+        logger.warning("send_message HTML failed, retrying without parse_mode: %s", e1)
+        try:
+            plain = text_html.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
+            plain = re.sub(r"<b>(.*?)</b>", r"\1", plain)
+            retry_kw = {**send_kw}
+            if reply_markup is not None:
+                retry_kw["reply_markup"] = reply_markup
+            sent = await bot.send_message(ch, plain, **retry_kw)
+            return sent.message_id, None
+        except Exception as e2:
+            return None, str(e2).replace("'", "").strip()[:220]
+
+
 async def _publish_media_to_channel(bot, message: types.Message, name: str, channel_id=None, reply_markup=None):
     ch = channel_id if channel_id is not None else _normalize_channel_target()
     if not ch:
         return False, None, "القناة غير مضبوطة (PUBLISH_CHANNEL_ID / USERNAME)"
-    cap = f"👤 **{name}**\n\n{(message.caption or '').strip()}" if (message.caption or "").strip() else f"👤 **{name}**"
-    if cap.endswith("\n\n"):
-        cap = cap.rstrip()
-    kwargs = {"parse_mode": "Markdown"}
+    cap_body = (message.caption or "").strip()
+    cap = _post_text_html(name, cap_body) if cap_body else f"👤 <b>{_html_esc(name)}</b>"
+    kwargs = {}
     if reply_markup:
         kwargs["reply_markup"] = reply_markup
     try:
         if message.text:
-            sent = await bot.send_message(ch, f"👤 **{name}**\n\n{message.text}", **kwargs)
-            return True, sent.message_id, None
+            text_html = _post_text_html(name, message.text or "")
+            mid, err = await _send_to_channel_safe(bot, ch, text_html, **kwargs)
+            return (True, mid, None) if mid else (False, None, err or "فشل الإرسال")
         if message.photo:
-            sent = await bot.send_photo(ch, message.photo[-1].file_id, caption=cap, **kwargs)
+            sent = await bot.send_photo(ch, message.photo[-1].file_id, caption=cap, parse_mode="HTML", **kwargs)
             return True, sent.message_id, None
         if message.voice:
-            sent = await bot.send_voice(ch, message.voice.file_id, caption=cap, **kwargs)
+            sent = await bot.send_voice(ch, message.voice.file_id, caption=cap, parse_mode="HTML", **kwargs)
             return True, sent.message_id, None
         if message.video:
-            sent = await bot.send_video(ch, message.video.file_id, caption=cap, **kwargs)
+            sent = await bot.send_video(ch, message.video.file_id, caption=cap, parse_mode="HTML", **kwargs)
             return True, sent.message_id, None
         if message.animation:
-            sent = await bot.send_animation(ch, message.animation.file_id, caption=cap, **kwargs)
+            sent = await bot.send_animation(ch, message.animation.file_id, caption=cap, parse_mode="HTML", **kwargs)
             return True, sent.message_id, None
         if message.sticker:
             await bot.send_sticker(ch, message.sticker.file_id)
-            sent = await bot.send_message(ch, f"👤 **{name}**", **kwargs)
-            return True, sent.message_id, None
+            mid, err = await _send_to_channel_safe(bot, ch, f"👤 <b>{_html_esc(name)}</b>", **kwargs)
+            return (True, mid, None) if mid else (False, None, err or "فشل الإرسال")
         if message.document:
-            sent = await bot.send_document(ch, message.document.file_id, caption=cap, **kwargs)
+            sent = await bot.send_document(ch, message.document.file_id, caption=cap, parse_mode="HTML", **kwargs)
             return True, sent.message_id, None
         if message.audio:
-            sent = await bot.send_audio(ch, message.audio.file_id, caption=cap, **kwargs)
+            sent = await bot.send_audio(ch, message.audio.file_id, caption=cap, parse_mode="HTML", **kwargs)
             return True, sent.message_id, None
         if message.video_note:
             await bot.send_video_note(ch, message.video_note.file_id)
-            sent = await bot.send_message(ch, f"👤 **{name}**", **kwargs)
-            return True, sent.message_id, None
+            mid, err = await _send_to_channel_safe(bot, ch, f"👤 <b>{_html_esc(name)}</b>", **kwargs)
+            return (True, mid, None) if mid else (False, None, err or "فشل الإرسال")
     except Exception as e:
         logger.exception("player_post: _publish_media_to_channel failed for ch=%s: %s", ch, e)
         return False, None, str(e).replace("'", "").strip()[:220]
@@ -584,8 +610,8 @@ async def player_post_receive_text_from_options(message: types.Message, state: F
                     total_pts = int(pr[0].get("online_points") or 0)
             except Exception:
                 pass
-        points_line = f"\n⭐ **مجموع نقاطه:** {total_pts}" if winner_id is not None else ""
-        text_to_send = f"{summary}{points_line}\n\n💬 **{w_name}:** {text}"
+        points_line = f"\n⭐ <b>مجموع نقاطه:</b> {total_pts}" if winner_id is not None else ""
+        text_to_send = f"{_html_esc(summary)}{points_line}\n\n💬 <b>{_html_esc(w_name)}:</b> {_html_esc(text)}"
         join_code = None
         if add_play:
             try:
@@ -593,24 +619,10 @@ async def player_post_receive_text_from_options(message: types.Message, state: F
             except Exception:
                 pass
         reply_kb = _channel_post_buttons(winner_id, add_profile, join_code)
-        try:
-            sent = await message.bot.send_message(chat_id=chat_target, text=text_to_send, parse_mode="Markdown", reply_markup=reply_kb)
-            if sent and sent.message_id and reply_kb:
-                try:
-                    row = db_query(
-                        "INSERT INTO channel_posts (channel_id, message_id, publisher_uid, add_profile, join_code) VALUES (%s, %s, %s, %s, %s) RETURNING id",
-                        (str(chat_target), sent.message_id, winner_id, bool(add_profile), join_code), commit=True
-                    )
-                    if row:
-                        post_id = row[0].get("id")
-                        new_kb = _channel_post_buttons(winner_id, add_profile, join_code, post_id=post_id, likes_count=0)
-                        if new_kb:
-                            await message.bot.edit_message_reply_markup(chat_id=chat_target, message_id=sent.message_id, reply_markup=new_kb)
-                except Exception:
-                    pass
-        except Exception as e:
-            logger.exception("share_result: publish to channel failed: %s", e)
-            err = str(e).replace("'", "").strip()[:220]
+        sent_mid, send_err = await _send_to_channel_safe(message.bot, chat_target, text_to_send, reply_markup=reply_kb)
+        if send_err or not sent_mid:
+            logger.warning("share_result: publish to channel failed: %s", send_err)
+            err = (send_err or "فشل الإرسال")[:220]
             await state.set_state(PlayerPostStates.waiting_options)
             await state.update_data(share_replay_id=share_replay_id, post_add_profile=add_profile, post_add_play=add_play)
             await message.answer(
@@ -618,6 +630,19 @@ async def player_post_receive_text_from_options(message: types.Message, state: F
                 + "\n\nيمكنك إرسال رسالة أخرى للمحاولة."
             )
             return
+        try:
+            if reply_kb:
+                row = db_query(
+                    "INSERT INTO channel_posts (channel_id, message_id, publisher_uid, add_profile, join_code) VALUES (%s, %s, %s, %s, %s) RETURNING id",
+                    (str(chat_target), sent_mid, winner_id, bool(add_profile), join_code), commit=True
+                )
+                if row:
+                    post_id = row[0].get("id")
+                    new_kb = _channel_post_buttons(winner_id, add_profile, join_code, post_id=post_id, likes_count=0)
+                    if new_kb:
+                        await message.bot.edit_message_reply_markup(chat_id=chat_target, message_id=sent_mid, reply_markup=new_kb)
+        except Exception:
+            pass
         kb_after = []
         if PUBLISH_CHANNEL_USERNAME:
             ch = PUBLISH_CHANNEL_USERNAME.lstrip("@")
@@ -627,22 +652,18 @@ async def player_post_receive_text_from_options(message: types.Message, state: F
         await message.answer("✅ تم نشر منشورك في " + ch_name + ".", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_after))
         return
     name = _get_player_name_for_post(uid, message.from_user.full_name)
-    text_to_send = f"👤 **{name}**\n\n{text}"
+    text_to_send = _post_text_html(name, text)
     join_code = _create_deferred_2p_room(uid, name) if add_play else None
     reply_kb = _channel_post_buttons(uid, add_profile, join_code)
-    try:
-        sent = await message.bot.send_message(chat_id=chat_target, text=text_to_send, parse_mode="Markdown", reply_markup=reply_kb)
-        sent_msg_id = sent.message_id if sent else None
-    except Exception as e:
-        logger.exception("player_post: send_message failed: %s", e)
-        err_str = str(e).replace("'", "").strip()[:220]
+    sent_msg_id, send_err = await _send_to_channel_safe(message.bot, chat_target, text_to_send, reply_markup=reply_kb)
+    if send_err:
         await state.set_state(PlayerPostStates.waiting_options)
         await state.update_data(post_add_profile=add_profile, post_add_play=add_play)
         await message.answer(
             "❌ فشل النشر.\n\n"
             "• تأكد أن البوت مضاف في القناة كـ **مسؤول** وله صلاحية «نشر رسائل».\n"
             "• تأكد أن المتغيرين PUBLISH_CHANNEL_ID و PUBLISH_CHANNEL_USERNAME في Variables يطابقان قناتك (مثلاً مجتمع الاونو).\n\n"
-            "الخطأ: " + err_str + "\n\nيمكنك إرسال رسالة أخرى للمحاولة."
+            "الخطأ: " + send_err[:220] + "\n\nيمكنك إرسال رسالة أخرى للمحاولة."
         )
         return
     if sent_msg_id is not None:
@@ -738,7 +759,7 @@ async def player_post_receive_text(message: types.Message, state: FSMContext):
     if not ok:
         return await message.answer(f"⛔ {reason}")
     name = _get_player_name_for_post(uid, message.from_user.full_name)
-    text_to_send = f"👤 **{name}**\n\n{text}"
+    text_to_send = _post_text_html(name, text)
     join_code = None
     if add_play:
         try:
@@ -752,19 +773,10 @@ async def player_post_receive_text(message: types.Message, state: FSMContext):
             "اضبط BOT_USERNAME في Variables أو في channel_config ثم أعد المحاولة."
         )
         return
-    sent_msg_id = None
-    try:
-        sent = await message.bot.send_message(chat_id=chat_target, text=text_to_send, parse_mode="Markdown", reply_markup=reply_kb)
-        sent_msg_id = sent.message_id
-    except Exception as e:
-        logger.exception("player_post: send_message with buttons failed: %s", e)
-        try:
-            sent = await message.bot.send_message(chat_id=chat_target, text=text_to_send, parse_mode="Markdown")
-            sent_msg_id = sent.message_id
-        except Exception as e2:
-            logger.exception("player_post: send_message without buttons failed: %s", e2)
-            await message.answer("❌ فشل النشر.\n\nتأكد أن البوت مضاف في القناة كـ **مسؤول** وله صلاحية «نشر رسائل». الخطأ: " + str(e2)[:200])
-            return
+    sent_msg_id, send_err = await _send_to_channel_safe(message.bot, chat_target, text_to_send, reply_markup=reply_kb)
+    if send_err:
+        await message.answer("❌ فشل النشر.\n\nتأكد أن البوت مضاف في القناة كـ **مسؤول** وله صلاحية «نشر رسائل». الخطأ: " + send_err[:200])
+        return
     if sent_msg_id is not None:
         try:
             row = db_query(
@@ -913,18 +925,15 @@ async def player_post_fallback_recent(message: types.Message, state: FSMContext)
         return
     await state.clear()
     name = _get_player_name_for_post(uid, message.from_user.full_name)
-    text_to_send = f"👤 **{name}**\n\n{text}"
+    text_to_send = _post_text_html(name, text)
     add_profile, add_play = True, False
     join_code = _create_deferred_2p_room(uid, name) if add_play else None
     reply_kb = _channel_post_buttons(uid, add_profile, join_code)
-    try:
-        sent = await message.bot.send_message(chat_id=chat_target, text=text_to_send, parse_mode="Markdown", reply_markup=reply_kb)
-        sent_msg_id = sent.message_id if sent else None
-    except Exception as e:
-        logger.exception("player_post fallback: send failed: %s", e)
+    sent_msg_id, send_err = await _send_to_channel_safe(message.bot, chat_target, text_to_send, reply_markup=reply_kb)
+    if send_err:
         await message.answer(
             "❌ فشل النشر (الحالة انتهت لكن حاولنا النشر).\n\n"
-            "تأكد أن البوت مسؤول في القناة وله صلاحية «نشر رسائل». جرّب: مجتمع الأونو ← نشر منشور ثم أرسل رسالتك مرة واحدة.\n\nالخطأ: " + str(e).replace("'", "")[:180]
+            "تأكد أن البوت مسؤول في القناة وله صلاحية «نشر رسائل». جرّب: مجتمع الأونو ← نشر منشور ثم أرسل رسالتك مرة واحدة.\n\nالخطأ: " + send_err[:180]
         )
         return
     if sent_msg_id is not None:
