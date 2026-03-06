@@ -647,16 +647,23 @@ async def start_button(message: types.Message):
 
 class FilterInRoom(BaseFilter):
     """يمرّر فقط إذا كان المرسل داخل غرفة (انتظار أو لعب). لا يمرّر إذا كان في وضع نشر منشور (حتى تصل الرسالة لمعالج النشر)."""
-    async def __call__(self, message: types.Message, data: dict) -> bool:
+    async def __call__(self, *args, **kwargs) -> bool:
+        event = args[0] if args else kwargs.get("event")
+        data = args[1] if len(args) > 1 else kwargs.get("data", {})
+        if event is None:
+            return False
+        if not isinstance(data, dict):
+            data = {}
+        user_id = getattr(getattr(event, "from_user", None), "id", None) or 0
         state = data.get("state")
-        if state:
+        if state is not None:
             try:
                 s = await state.get_state()
                 if s and ("waiting_message" in (s or "") or "waiting_options" in (s or "")):
                     return False
             except Exception:
                 pass
-        return get_user_current_room(message.from_user.id) is not None
+        return get_user_current_room(user_id) is not None
 
 
 # مراجع لمهام الحذف المؤجل حتى لا تُهمل من الـ event loop
@@ -3802,12 +3809,5 @@ async def home_callback(c: types.CallbackQuery, state: FSMContext):
     await c.answer()
 
 
-# مجتمع الأونو والنشر: هاندلرز منفصلة في community_publish (نشر فوزك، منشوراتي، إلخ)
-try:
-    from handlers.community_publish import router as _community_router
-    router.include_router(_community_router)
-    logger.info("📢 روتر المجتمع والنشر (community_publish) مُسجّل بنجاح.")
-    print("📢 نشر النتائج/المنشورات: مُسجّل (زر «نشر فوزك» و مجتمع الأونو)")
-except Exception as e:
-    logger.exception("❌ فشل تحميل روتر المجتمع والنشر (نشر فوزك لن يعمل): %s", e)
-    print("❌ نشر النتائج: فشل تحميل الوحدة —", str(e)[:120])
+# مجتمع الأونو والنشر: الروتر يُسجّل من bot.py أولاً حتى تعمل رسائل النشر (لا يُسجّل هنا لتجنب التكرار)
+# كان: router.include_router(community_publish) — نُقل إلى bot.py
