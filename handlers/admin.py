@@ -70,6 +70,54 @@ async def cmd_channel_id(message: types.Message):
         await message.answer(f"❌ لا يمكن جلب القناة. تأكد أن البوت داخل القناة أو أن القناة عامة.\n\nالتفاصيل: {e}")
 
 
+@router.message(Command("test_publish_channel"))
+async def cmd_test_publish_channel(message: types.Message):
+    """أمر للأدمن: إرسال رسالة تجريبية إلى قناة النشر للتحقق من أن البوت يستطيع النشر."""
+    if not is_admin(message.from_user.id):
+        return
+    try:
+        from handlers.common import PUBLISH_CHANNEL_ID, PUBLISH_CHANNEL_USERNAME
+    except Exception:
+        await message.answer("❌ تعذر تحميل إعدادات القناة.")
+        return
+    chat_target = None
+    if PUBLISH_CHANNEL_ID is not None:
+        try:
+            raw = str(PUBLISH_CHANNEL_ID).strip().strip('"').strip("'")
+            if raw:
+                ch = int(raw)
+                chat_target = -ch if ch > 0 else ch
+        except (TypeError, ValueError):
+            pass
+    if chat_target is None and (PUBLISH_CHANNEL_USERNAME or "").strip():
+        un = (PUBLISH_CHANNEL_USERNAME or "").strip().lstrip("@")
+        chat_target = f"@{un}"
+    if not chat_target:
+        await message.answer(
+            "⚠️ قناة النشر غير مضبوطة.\n\n"
+            "اضبط PUBLISH_CHANNEL_ID أو PUBLISH_CHANNEL_USERNAME في channel_config.py أو متغيرات البيئة."
+        )
+        return
+    try:
+        await message.bot.send_message(
+            chat_target,
+            "✅ رسالة تجريبية من البوت — النشر يعمل بشكل سليم.",
+            parse_mode=None
+        )
+        await message.answer(
+            f"✅ تم إرسال رسالة تجريبية إلى القناة (chat_id={chat_target}).\n\n"
+            "إن لم تظهر الرسالة في القناة، تأكد أن البوت مضاف كـ **مسؤول** وله صلاحية «نشر رسائل»."
+        )
+    except Exception as e:
+        err = str(e).replace("'", "")[:250]
+        await message.answer(
+            "❌ فشل إرسال الرسالة التجريبية إلى القناة.\n\n"
+            "• أضف البوت في القناة كـ **مسؤول** وامنحه صلاحية «نشر رسائل».\n"
+            "• تأكد أن معرف القناة أو اليوزر صحيح.\n\n"
+            f"الخطأ: {err}"
+        )
+
+
 @router.callback_query(F.data == "admin_open_panel")
 async def admin_open_from_menu(c: types.CallbackQuery, state: FSMContext):
     if not _admin_only(c):
