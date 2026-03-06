@@ -375,10 +375,11 @@ async def player_post_start(c: types.CallbackQuery, state: FSMContext):
     await state.set_state(PlayerPostStates.waiting_options)
     await state.update_data(post_add_profile=True, post_add_play=False)
     await c.message.edit_text(
-        "📢 **نشر منشور**\n\nاختر ما تريد إضافته تحت منشورك، ثم أرسل النص أو الصورة أو أي ميديا مباشرة (بدون نقر «تم»).\n\n"
+        "📢 **نشر منشور**\n\nاختر ما تريد إضافته تحت منشورك، ثم أرسل **رسالة واحدة** (نص أو صورة أو ميديا) — سيُنشر فوراً في القناة.\n\n"
         "• **زر حسابي:** يظهر زر يفتح بروفايلك (متابعة، طلب لعب، رجوع للقناة).\n"
         "• **العب معي:** يظهر زر من يضغطه ينضم معك في كيم ثنائي فوراً.\n\n"
-        "⚠️ لا يُسمح بنشر أرقام هواتف أو كلمات تخالف المعايير.",
+        "⚠️ لا يُسمح بنشر أرقام هواتف أو كلمات تخالف المعايير.\n\n"
+        "_بعد إرسال الرسالة ستظهر لك «تم نشر منشورك» أو رسالة خطأ إن فشل النشر._",
         reply_markup=_post_options_kb({"post_add_profile": True, "post_add_play": False}),
         parse_mode="Markdown"
     )
@@ -524,7 +525,6 @@ async def player_post_receive_text_from_options(message: types.Message, state: F
     share_replay_id = data.get("share_replay_id")
     add_profile = data.get("post_add_profile", True)
     add_play = data.get("post_add_play", False)
-    await state.clear()
     chat_target = _normalize_channel_target()
     if not chat_target:
         logger.warning("player_post_receive_text_from_options: no chat_target")
@@ -532,7 +532,8 @@ async def player_post_receive_text_from_options(message: types.Message, state: F
     text = (message.text or "").strip()
     ok, reason = check_post_content(text)
     if not ok:
-        return await message.answer(f"⛔ {reason}")
+        return await message.answer(f"⛔ {reason}\n\nيمكنك إرسال رسالة أخرى الآن (نص أو صورة).")
+    await state.clear()
     if share_replay_id:
         rdata = replay_data.get(share_replay_id)
         if not rdata:
@@ -582,13 +583,20 @@ async def player_post_receive_text_from_options(message: types.Message, state: F
         except Exception as e:
             logger.exception("share_result: publish to channel failed: %s", e)
             err = str(e).replace("'", "").strip()[:220]
-            await message.answer("❌ فشل النشر.\n\nتحقق أن البوت مضاف في القناة كـ **مسؤول** وله صلاحية «نشر رسائل».\n\nالخطأ: " + err)
+            await state.set_state(PlayerPostStates.waiting_options)
+            await state.update_data(share_replay_id=share_replay_id, post_add_profile=add_profile, post_add_play=add_play)
+            await message.answer(
+                "❌ فشل النشر.\n\nتحقق أن البوت مضاف في القناة كـ **مسؤول** وله صلاحية «نشر رسائل».\n\nالخطأ: " + err
+                + "\n\nيمكنك إرسال رسالة أخرى للمحاولة."
+            )
             return
         kb_after = []
         if PUBLISH_CHANNEL_USERNAME:
-            kb_after.append([InlineKeyboardButton(text="📢 الذهاب للقناة", url=f"https://t.me/{PUBLISH_CHANNEL_USERNAME.lstrip('@')}")])
+            ch = PUBLISH_CHANNEL_USERNAME.lstrip("@")
+            kb_after.append([InlineKeyboardButton(text="📢 الذهاب للقناة", url=f"https://t.me/{ch}")])
         kb_after.append([InlineKeyboardButton(text="🔙 رجوع للقائمة الرئيسية", callback_data="home")])
-        await message.answer("✅ تم نشر منشورك.", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_after))
+        ch_name = f"@{PUBLISH_CHANNEL_USERNAME.lstrip('@')}" if PUBLISH_CHANNEL_USERNAME else "القناة"
+        await message.answer("✅ تم نشر منشورك في " + ch_name + ".", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_after))
         return
     name = _get_player_name_for_post(uid, message.from_user.full_name)
     text_to_send = f"👤 **{name}**\n\n{text}"
@@ -599,7 +607,12 @@ async def player_post_receive_text_from_options(message: types.Message, state: F
         sent_msg_id = sent.message_id if sent else None
     except Exception as e:
         logger.exception("player_post: send_message failed: %s", e)
-        await message.answer(f"❌ فشل النشر.\n\nالخطأ: {str(e).replace(chr(39), '').strip()[:220]}")
+        await state.set_state(PlayerPostStates.waiting_options)
+        await state.update_data(post_add_profile=add_profile, post_add_play=add_play)
+        await message.answer(
+            "❌ فشل النشر.\n\nتأكد أن البوت مضاف في القناة كـ **مسؤول** وله صلاحية «نشر رسائل».\n\nالخطأ: " + str(e).replace(chr(39), "").strip()[:220]
+            + "\n\nيمكنك إرسال رسالة أخرى للمحاولة."
+        )
         return
     if sent_msg_id is not None:
         try:
@@ -616,9 +629,11 @@ async def player_post_receive_text_from_options(message: types.Message, state: F
             pass
     kb_after = []
     if PUBLISH_CHANNEL_USERNAME:
-        kb_after.append([InlineKeyboardButton(text="📢 الذهاب للقناة", url=f"https://t.me/{PUBLISH_CHANNEL_USERNAME.lstrip('@')}")])
+        ch = PUBLISH_CHANNEL_USERNAME.lstrip("@")
+        kb_after.append([InlineKeyboardButton(text="📢 الذهاب للقناة", url=f"https://t.me/{ch}")])
     kb_after.append([InlineKeyboardButton(text="🔙 رجوع للقائمة الرئيسية", callback_data="home")])
-    await message.answer("✅ تم نشر منشورك في القناة.", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_after))
+    ch_txt = f"@{PUBLISH_CHANNEL_USERNAME.lstrip('@')}" if PUBLISH_CHANNEL_USERNAME else "القناة"
+    await message.answer("✅ تم نشر منشورك في " + ch_txt + ". اضغط الزر أعلاه لمعاينة القناة.", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_after))
 
 
 @router.message(PlayerPostStates.waiting_options, F.photo | F.voice | F.video | F.animation | F.sticker | F.document | F.audio | F.video_note)
