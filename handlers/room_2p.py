@@ -700,11 +700,12 @@ async def send_or_update_game_ui(room_id, bot, user_id, remaining_seconds=None, 
             if len(hand) == 2 and any(check_validity(c, room['top_card'], room['current_color']) for c in hand):
                 controls.append(InlineKeyboardButton(text="🚨 اونو!", callback_data=f"un_{room_id}"))
 
-        # منطق الصيدة
+        # منطق الصيدة: لا نعرض الزر عندما الخصم بوت (البوت ينفّذ الصيدة تلقائياً في دوره)
         opp = players[1] if players[0]['user_id'] == user_id else players[0]
-        opp_h = safe_load(opp.get('hand', '[]'))
-        if len(opp_h) == 1 and not str(opp.get('said_uno', 'false')).lower() in ['true', '1']:
-            controls.append(InlineKeyboardButton(text="🪤 صيدة!", callback_data=f"ct_{room_id}"))
+        if opp['user_id'] != BOT_USER_ID:
+            opp_h = safe_load(opp.get('hand', '[]'))
+            if len(opp_h) == 1 and not str(opp.get('said_uno', 'false')).lower() in ['true', '1']:
+                controls.append(InlineKeyboardButton(text="🪤 صيدة!", callback_data=f"ct_{room_id}"))
 
         if controls:
             kb.append(controls)
