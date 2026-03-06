@@ -477,6 +477,8 @@ def create_replay_session(players: list, room: dict, mode: str, summary_text: st
 def build_game_end_keyboard(replay_id: str, for_user_id: int) -> InlineKeyboardMarkup:
     """كيبورد نهاية اللعبة: كل اللاعبين مع (✓ أتابعه، ➕ لا أتابعه، 📥 يتابعني، 🔄 نتابع بعض) وزر متابعة/إلغاء. الضغط على متابعة لا يخفي القائمة."""
     rdata = replay_data.get(replay_id)
+    if not rdata and replay_id:
+        rdata = _get_replay_from_db(replay_id)
     if not rdata:
         return InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🏠 القائمة الرئيسية", callback_data="home")]
@@ -528,6 +530,11 @@ def build_game_end_keyboard(replay_id: str, for_user_id: int) -> InlineKeyboardM
             InlineKeyboardButton(text=btn_text, callback_data=cb)
         ])
     winner_id = rdata.get("winner_id")
+    if winner_id is not None:
+        try:
+            winner_id = int(winner_id)
+        except (TypeError, ValueError):
+            winner_id = None
     if winner_id and for_user_id == winner_id and (PUBLISH_CHANNEL_ID or PUBLISH_CHANNEL_USERNAME) and BOT_USERNAME:
         share_btn_text = "📢 نشر فوزك"
         try:
