@@ -107,11 +107,16 @@ if PUBLISH_CHANNEL_ID is None and not PUBLISH_CHANNEL_USERNAME:
     BOT_USERNAME = BOT_USERNAME or "UNO101bot"
     logger.info("Using default publish channel: id=%s username=%s", PUBLISH_CHANNEL_ID, PUBLISH_CHANNEL_USERNAME)
 
-# سجل عند التشغيل لمعرفة إن كانت القناة مضبوطة (للتشخيص)
-if PUBLISH_CHANNEL_ID is not None or PUBLISH_CHANNEL_USERNAME:
-    logger.info("Publish channel configured: id=%s username=%s", PUBLISH_CHANNEL_ID, PUBLISH_CHANNEL_USERNAME)
+# إذا القناة مضبوطة لكن BOT_USERNAME فارغ، استخدم قيمة افتراضية حتى يظهر زر «نشر فوزك»
+if (PUBLISH_CHANNEL_ID is not None or PUBLISH_CHANNEL_USERNAME) and not (BOT_USERNAME or "").strip():
+    BOT_USERNAME = "UNO101bot"
+    logger.info("Publish channel set but BOT_USERNAME was empty; using default: %s", BOT_USERNAME)
+
+# سجل عند التشغيل لمعرفة إن كانت النشر مفعّلة (للتشخيص)
+if (PUBLISH_CHANNEL_ID is not None or PUBLISH_CHANNEL_USERNAME) and (BOT_USERNAME or "").strip():
+    logger.info("📢 نشر النتائج/المنشورات: مفعّل (قناة=%s، بوت=@%s)", PUBLISH_CHANNEL_ID or PUBLISH_CHANNEL_USERNAME, (BOT_USERNAME or "").strip().lstrip("@"))
 else:
-    logger.warning("Publish channel NOT configured - PUBLISH_CHANNEL_ID and PUBLISH_CHANNEL_USERNAME are empty")
+    logger.warning("📢 نشر النتائج: معطّل — اضبط PUBLISH_CHANNEL_ID أو PUBLISH_CHANNEL_USERNAME و BOT_USERNAME (في channel_config.py أو متغيرات البيئة)")
 
 async def is_channel_member(bot, user_id: int) -> bool:
     if not CHANNEL_ID:
@@ -3774,6 +3779,10 @@ async def home_callback(c: types.CallbackQuery, state: FSMContext):
     await c.answer()
 
 
-# مجتمع الأونو والنشر: هاندلرز منفصلة في community_publish
-from handlers.community_publish import router as _community_router
-router.include_router(_community_router)
+# مجتمع الأونو والنشر: هاندلرز منفصلة في community_publish (نشر فوزك، منشوراتي، إلخ)
+try:
+    from handlers.community_publish import router as _community_router
+    router.include_router(_community_router)
+    logger.info("📢 روتر المجتمع والنشر (community_publish) مُسجّل بنجاح.")
+except Exception as e:
+    logger.exception("❌ فشل تحميل روتر المجتمع والنشر (نشر فوزك لن يعمل): %s", e)
