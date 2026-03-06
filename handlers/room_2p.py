@@ -915,12 +915,12 @@ async def handle_wild_color_card(c, state: FSMContext, room_id, p_idx, opp_id, p
     )
     color_kb = [
         [
-            InlineKeyboardButton(text="🔴 أحمر", callback_data="cl_🔴"),
-            InlineKeyboardButton(text="🔵 أزرق", callback_data="cl_🔵")
+            InlineKeyboardButton(text="🔴 أحمر", callback_data=f"cl_{room_id}_🔴"),
+            InlineKeyboardButton(text="🔵 أزرق", callback_data=f"cl_{room_id}_🔵")
         ],
         [
-            InlineKeyboardButton(text="🟡 أصفر", callback_data="cl_🟡"),
-            InlineKeyboardButton(text="🟢 أخضر", callback_data="cl_🟢")
+            InlineKeyboardButton(text="🟡 أصفر", callback_data=f"cl_{room_id}_🟡"),
+            InlineKeyboardButton(text="🟢 أخضر", callback_data=f"cl_{room_id}_🟢")
         ]
     ]
     await c.message.edit_text(
@@ -1117,14 +1117,37 @@ async def handle_play(c: types.CallbackQuery, state: FSMContext):
         print(f"Error in handle_play: {e}")
         await c.answer("⚠️ حدث خطأ بسيط، حاول مرة أخرى", show_alert=True)
 
-@router.callback_query(GameStates.choosing_color, F.data.startswith("cl_"))
+@router.callback_query(F.data.startswith("cl_"))
 async def handle_color(c: types.CallbackQuery, state: FSMContext):
     try:
-        data = await state.get_data()
-        room_id = data.get('room_id')
-        card = data.get('card_played')
-        p_idx = data.get('p_idx')
-        chosen_color = c.data.split("_")[1]
+        # دعم صيغتين: cl_🔴 (قديم) أو cl_ROOMID_🔴 (جديد — يعمل حتى لو فُقدت الحالة)
+        parts = c.data.split("_")
+        if len(parts) >= 3:
+            room_id = parts[1]
+            chosen_color = parts[2]
+        else:
+            data = await state.get_data()
+            room_id = data.get('room_id')
+            chosen_color = parts[1] if len(parts) >= 2 else ""
+        if not room_id or not chosen_color:
+            return await c.answer("⚠️ انتهت صلاحية الاختيار. العب ورقة أخرى إن أمكن.", show_alert=True)
+        card = (await state.get_data()).get('card_played') if room_id else None
+        p_idx = (await state.get_data()).get('p_idx')
+        if card is None or p_idx is None:
+            pending = pending_color_data.get(room_id)
+            if pending:
+                card = pending.get('card_played')
+                p_idx = pending.get('p_idx')
+        if card is None or p_idx is None:
+            room_data = db_query("SELECT * FROM rooms WHERE room_id = %s", (room_id,))
+            if not room_data:
+                return await c.answer("⚠️ الغرفة غير موجودة.", show_alert=True)
+            room = room_data[0]
+            players = get_ordered_players(room_id)
+            if not players or c.from_user.id != players[0]['user_id'] and c.from_user.id != players[1]['user_id']:
+                return await c.answer("⚠️ لست في هذه الغرفة.", show_alert=True)
+            p_idx = 0 if players[0]['user_id'] == c.from_user.id else 1
+            card = room.get('top_card') or '🌈 جوكر ألوان'
         
         # إلغاء التايمر أولاً
         task = color_timers.pop(room_id, None)
@@ -1140,14 +1163,21 @@ async def handle_color(c: types.CallbackQuery, state: FSMContext):
             except: 
                 pass
         
-        # إزالة البيانات المعلقة
-        pending_color_data.pop(room_id, None)
+        # إزالة البيانات المعلقة (نحفظ prev_color قبل المسح للجوكر +4)
+        pending = pending_color_data.pop(room_id, None)
+        prev_color = (pending or {}).get('prev_color')
         
         if room_id in color_timed_out:
             color_timed_out.discard(room_id)
             await state.clear()
             return
         
+        room_data = db_query("SELECT * FROM rooms WHERE room_id = %s", (room_id,))
+        if not room_data:
+            return await c.answer("⚠️ الغرفة غير موجودة.", show_alert=True)
+        room = room_data[0]
+        if prev_color is None:
+            prev_color = room.get('current_color')
         players = get_ordered_players(room_id)
         opp_id = players[(p_idx + 1) % 2]['user_id']
         p_name = players[p_idx].get('player_name') or "لاعب"
@@ -1155,7 +1185,7 @@ async def handle_color(c: types.CallbackQuery, state: FSMContext):
         # إذا كانت الورقة من نوع 🔥 جوكر+4
         if "🔥" in card:
             kb = [[
-                InlineKeyboardButton(text="🕵️‍♂️ أتحداك", callback_data=f"rs_y_{room_id}_{data.get('prev_color')}_{chosen_color}"),
+                InlineKeyboardButton(text="🕵️‍♂️ أتحداك", callback_data=f"rs_y_{room_id}_{prev_color}_{chosen_color}"),
                 InlineKeyboardButton(text="✅ قبول", callback_data=f"rs_n_{room_id}_{chosen_color}")
             ]]
             msg_sent = await c.bot.send_message(
