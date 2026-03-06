@@ -581,15 +581,19 @@ class PlayerPostStates(StatesGroup):
 # قائمة انتظار النشر: في الذاكرة + قاعدة البيانات (لعمل أكثر من worker)
 _pending_post: dict = {}  # user_id -> {"add_profile": bool, "add_play": bool, "at": float}
 _PENDING_POST_TIMEOUT = 600  # 10 دقائق
+_pending_post_columns_ok = True  # False بعد أول فشل بسبب غياب الأعمدة (لتجنب تكرار الخطأ في اللوق)
 
 
 def _get_pending_post(uid: int):
     """يرجع خيارات المنشور إن كان المستخدم بانتظار إرسال منشور (من الذاكرة أو DB)، بدون مسح."""
+    global _pending_post_columns_ok
     if uid in _pending_post:
         t = _pending_post[uid].get("at", 0)
         if time.time() - t <= _PENDING_POST_TIMEOUT:
             return _pending_post[uid]
         _pending_post.pop(uid, None)
+    if not _pending_post_columns_ok:
+        return None
     try:
         row = db_query(
             "SELECT pending_post_options, pending_post_at FROM users WHERE user_id = %s",
@@ -601,24 +605,35 @@ def _get_pending_post(uid: int):
         at = row[0]["pending_post_at"]
         at_sec = at.timestamp() if at and hasattr(at, "timestamp") else (float(at) if isinstance(at, (int, float)) else 0)
         if at_sec and (time.time() - at_sec) > _PENDING_POST_TIMEOUT:
-            db_query("UPDATE users SET pending_post_options = NULL, pending_post_at = NULL WHERE user_id = %s", (uid,), commit=True)
+            try:
+                db_query("UPDATE users SET pending_post_options = NULL, pending_post_at = NULL WHERE user_id = %s", (uid,), commit=True)
+            except Exception:
+                pass
             return None
         opts = json.loads(opts_str) if isinstance(opts_str, str) else opts_str
         return {"add_profile": opts.get("add_profile", True), "add_play": opts.get("add_play", False), "at": at_sec}
     except Exception as e:
-        logger.debug("_get_pending_post DB: %s (شغّل إضافات schema_additions.sql إن لم تكن نُفّذت)", e)
+        err_str = str(e).lower()
+        if "pending_post" in err_str or "does not exist" in err_str or "column" in err_str:
+            _pending_post_columns_ok = False
+        else:
+            logger.debug("_get_pending_post DB: %s", e)
         return None
 
 
 def _get_and_clear_pending_post(uid: int):
     """يرجع خيارات المنشور ويمسحها من الذاكرة والـ DB."""
+    global _pending_post_columns_ok
     opts = _pending_post.pop(uid, None)
     if opts and (time.time() - opts.get("at", 0)) <= _PENDING_POST_TIMEOUT:
-        try:
-            db_query("UPDATE users SET pending_post_options = NULL, pending_post_at = NULL WHERE user_id = %s", (uid,), commit=True)
-        except Exception:
-            pass
+        if _pending_post_columns_ok:
+            try:
+                db_query("UPDATE users SET pending_post_options = NULL, pending_post_at = NULL WHERE user_id = %s", (uid,), commit=True)
+            except Exception:
+                pass
         return opts
+    if not _pending_post_columns_ok:
+        return None
     try:
         row = db_query(
             "SELECT pending_post_options, pending_post_at FROM users WHERE user_id = %s",
@@ -631,12 +646,21 @@ def _get_and_clear_pending_post(uid: int):
         if at is not None and hasattr(at, "timestamp"):
             at = at.timestamp()
         if at is not None and (time.time() - at) > _PENDING_POST_TIMEOUT:
-            db_query("UPDATE users SET pending_post_options = NULL, pending_post_at = NULL WHERE user_id = %s", (uid,), commit=True)
+            try:
+                db_query("UPDATE users SET pending_post_options = NULL, pending_post_at = NULL WHERE user_id = %s", (uid,), commit=True)
+            except Exception:
+                pass
             return None
-        db_query("UPDATE users SET pending_post_options = NULL, pending_post_at = NULL WHERE user_id = %s", (uid,), commit=True)
+        try:
+            db_query("UPDATE users SET pending_post_options = NULL, pending_post_at = NULL WHERE user_id = %s", (uid,), commit=True)
+        except Exception:
+            pass
         opts = json.loads(opts_str) if isinstance(opts_str, str) else opts_str
         return {"add_profile": opts.get("add_profile", True), "add_play": opts.get("add_play", False), "at": at or 0}
-    except Exception:
+    except Exception as e:
+        err_str = str(e).lower()
+        if "pending_post" in err_str or "does not exist" in err_str or "column" in err_str:
+            _pending_post_columns_ok = False
         return None
 
 
@@ -976,8 +1000,14 @@ async def _send_media_copy(bot, chat_id: int, message: types.Message, sender_nam
 
 
 @router.message(FilterInRoom())
-async def room_chat_broadcast(message: types.Message):
+async def room_chat_broadcast(message: types.Message, state: FSMContext):
     """نظام محادثة الغرفة: أي رسالة (نص، صورة، صوت، فيديو، ملصق، ...) من لاعب داخل الغرفة تُذاع للباقين وتُحذف بعد 10 ثوانٍ."""
+    try:
+        s = await state.get_state()
+        if s and ("waiting_message" in (s or "") or "waiting_options" in (s or "")):
+            return
+    except Exception:
+        pass
     if message.text and (message.text.strip().startswith("/") and message.text.strip().lower() != "/start"):
         return
     if not message.text and not message.photo and not message.voice and not message.video and not message.animation and not message.sticker and not message.document and not message.audio and not message.video_note:
