@@ -469,12 +469,11 @@ async def background_auto_draw(room_id, bot, curr_idx):
         p_id = players[curr_idx]['user_id']
         p_name = players[curr_idx].get('player_name') or "لاعب"
 
-        # العد التنازلي من خلال تحديث واجهة اللعب فقط
+        # العد التنازلي من خلال تحديث واجهة اللعب (الثواني والشارة تتحرك 5→4→3→2→1)
         for sec in range(5, 0, -1):
-            # تحديث واجهة اللاعب مع رسالة العد التنازلي
             await send_or_update_game_ui(
                 room_id, bot, p_id,
-                remaining_seconds=None,
+                remaining_seconds=sec,
                 alert_text=f"⏳ ما عندك ورقة مناسبة! راح اسحبلك تلقائياً بعد {sec} ثواني..."
             )
             await asyncio.sleep(1)
@@ -651,25 +650,23 @@ async def send_or_update_game_ui(room_id, bot, user_id, remaining_seconds=None, 
         # 4. التحديث الذكي (الجزء الأهم لثبات الرسالة)
         old_msg_id = player_ui_msgs.get(user_id, {}).get('game_ui')
         
+        parse_kw = {"parse_mode": "Markdown"} if "**" in info_text else {}
         if old_msg_id:
             try:
-                # نحاول نعدل الرسالة فقط
                 await bot.edit_message_text(
-                    text=info_text, 
-                    chat_id=user_id, 
-                    message_id=old_msg_id, 
-                    reply_markup=markup
+                    text=info_text,
+                    chat_id=user_id,
+                    message_id=old_msg_id,
+                    reply_markup=markup,
+                    **parse_kw
                 )
-                return # التحديث نجح، نطلع من الدالة
+                return
             except Exception as e:
-                # إذا الخطأ هو أن النص لم يتغير، نتجاهله ولا نفعل شيئاً
                 if "message is not modified" in str(e).lower():
                     return
-                # أي خطأ آخر (مثل الرسالة انحذفت من قبل المستخدم)، نكمل عشان نرسل وحدة جديدة
                 pass
 
-        # إرسال رسالة جديدة فقط عند الضرورة القصوى
-        new_msg = await bot.send_message(user_id, info_text, reply_markup=markup)
+        new_msg = await bot.send_message(user_id, info_text, reply_markup=markup, **parse_kw)
         player_ui_msgs.setdefault(user_id, {})['game_ui'] = new_msg.message_id
 
     except Exception as e:
