@@ -48,11 +48,23 @@ def _read_bot_info_message():
                 with open(path, "r", encoding="utf-8") as f:
                     out = f.read().strip()
                 if out:
+                    logger.info("BOT_INFO_MESSAGE: loaded from %s", path)
                     return out
         except Exception as e:
             logger.debug("BOT_INFO_MESSAGE: could not read %s: %s", path, e)
-    logger.warning("BOT_INFO_MESSAGE: file not found in any of %s", BOT_INFO_CANDIDATES)
+    logger.warning("BOT_INFO_MESSAGE: file not found, using i18n fallback. Tried: %s", BOT_INFO_CANDIDATES)
     return None
+
+
+def _markdown_to_html(text):
+    """تحويل تنسيق ماركداون بسيط إلى HTML لتيليجرام (ليظهر الخط العريض بشكل صحيح)."""
+    if not text:
+        return text
+    # **نص** -> <b>نص</b>
+    text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text, flags=re.DOTALL)
+    # هروب & فقط (لأن < و > قد تكسر التنسيق)
+    text = text.replace("&", "&amp;")
+    return text
 _config_path = os.path.join(_handlers_dir, "channel_config.py")
 if os.path.isfile(_config_path):
     try:
@@ -3535,14 +3547,19 @@ async def show_rules(c: types.CallbackQuery):
 @router.callback_query(F.data == "bot_info")
 async def show_bot_info(c: types.CallbackQuery):
     uid = c.from_user.id
-    text = _read_bot_info_message()
-    if not text:
+    raw = _read_bot_info_message()
+    use_html = False
+    if raw:
+        text = _markdown_to_html(raw)
+        use_html = True
+    else:
         text = t(uid, "bot_info_title") + "\n\n" + t(uid, "bot_info_text")
     kb = [[InlineKeyboardButton(text=t(uid, "btn_back_short"), callback_data="home")]]
+    parse_mode = "HTML" if use_html else "Markdown"
     try:
-        await c.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="Markdown")
+        await c.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode=parse_mode)
     except Exception:
-        await c.message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="Markdown")
+        await c.message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode=parse_mode)
     await c.answer()
 
 @router.callback_query(F.data == "leaderboard")
