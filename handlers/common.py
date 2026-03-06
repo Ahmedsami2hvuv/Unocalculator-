@@ -100,8 +100,20 @@ if _cc:
     if getattr(_cc, "BOT_USERNAME", None):
         BOT_USERNAME = _cc.BOT_USERNAME
 
+# تحويل PUBLISH_CHANNEL_ID من نص (متغير بيئة) إلى رقم إن لزم — حتى يعمل النشر عند النشر على Railway/Heroku
+if PUBLISH_CHANNEL_ID is not None and isinstance(PUBLISH_CHANNEL_ID, str):
+    _s = PUBLISH_CHANNEL_ID.strip().strip('"').strip("'")
+    if _s:
+        try:
+            _n = int(_s)
+            PUBLISH_CHANNEL_ID = -_n if _n > 0 else _n
+        except (TypeError, ValueError):
+            PUBLISH_CHANNEL_ID = None
+    else:
+        PUBLISH_CHANNEL_ID = None
+
 # قيم افتراضية إذا لم تُحمَّل من الملف أو البيئة (تطابق channel_config.py)
-if PUBLISH_CHANNEL_ID is None and not PUBLISH_CHANNEL_USERNAME:
+if PUBLISH_CHANNEL_ID is None and not (PUBLISH_CHANNEL_USERNAME or "").strip():
     PUBLISH_CHANNEL_ID = -1003308032178
     PUBLISH_CHANNEL_USERNAME = "uno1011"
     BOT_USERNAME = BOT_USERNAME or "UNO101bot"
