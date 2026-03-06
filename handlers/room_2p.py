@@ -459,24 +459,23 @@ async def color_timeout_2p(room_id, bot, player_id):
 
 
 async def background_auto_draw(room_id, bot, curr_idx):
-    """دالة السحب التلقائي: تنتظر 5 ثوانٍ مع تحديث واجهة اللعب، تسحب ورقة، ثم تتصرف حسب صلاحيتها."""
+    """دالة السحب التلقائي: تعرض التنبيه مرة واحدة، تنتظر 5 ثوانٍ، ثم تسحب ورقة (بدون تعديل الرسالة كل ثانية لتفادي حد التعديل أو توقف الواجهة)."""
     try:
         cancel_auto_draw_task(room_id)
 
         players = get_ordered_players(room_id)
-        if curr_idx >= len(players): 
+        if curr_idx >= len(players):
             return
         p_id = players[curr_idx]['user_id']
         p_name = players[curr_idx].get('player_name') or "لاعب"
 
-        # العد التنازلي من خلال تحديث واجهة اللعب (الثواني والشارة تتحرك 5→4→3→2→1)
-        for sec in range(5, 0, -1):
-            await send_or_update_game_ui(
-                room_id, bot, p_id,
-                remaining_seconds=sec,
-                alert_text=f"⏳ ما عندك ورقة مناسبة! راح اسحبلك تلقائياً بعد {sec} ثواني..."
-            )
-            await asyncio.sleep(1)
+        # عرض التنبيه مرة واحدة فقط ثم انتظار 5 ثوانٍ (لا نعدّل الرسالة كل ثانية — يمنع توقف العد أو حد التعديل)
+        await send_or_update_game_ui(
+            room_id, bot, p_id,
+            remaining_seconds=5,
+            alert_text="⏳ ما عندك ورقة مناسبة! راح اسحبلك تلقائياً بعد 5 ثواني..."
+        )
+        await asyncio.sleep(5)
 
         # التحقق من أن اللاعب لا يزال في نفس الدور
         room_data = db_query("SELECT * FROM rooms WHERE room_id = %s", (room_id,))
