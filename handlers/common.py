@@ -205,6 +205,7 @@ router.callback_query.middleware(channel_subscribe_callback_middleware)
 
     
 replay_data = {}
+random_wait_tasks = {}  # room_id -> asyncio.Task (إلغاؤه عند انضمام لاعب ثانٍ)
 pending_invites = {}
 pending_next_round = {}
 next_round_ready = {}
@@ -1585,6 +1586,32 @@ async def login_password(message: types.Message, state: FSMContext):
         return
     await show_main_menu(message, name, user_id=uid)
 
+async def _random_wait_30_sec(room_id: str, uid: int, message_id: int, chat_id: int, bot):
+    """بعد 30 ثانية: إن بقي اللاعب وحده في الغرفة، نعرض له رسالة «لا يوجد لاعب» مع أزرار نعم/طلب مجدد/رجوع."""
+    try:
+        await asyncio.sleep(30)
+        random_wait_tasks.pop(room_id, None)
+        r = db_query("SELECT status FROM rooms WHERE room_id = %s", (room_id,))
+        if not r or r[0].get("status") != "waiting":
+            return
+        cnt = db_query("SELECT COUNT(*) AS c FROM room_players WHERE room_id = %s", (room_id,))
+        if not cnt or cnt[0].get("c", 0) != 1:
+            return
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=t(uid, "btn_yes_play_bot"), callback_data=f"play_vs_bot_{room_id}")],
+            [InlineKeyboardButton(text=t(uid, "btn_random_again"), callback_data=f"random_retry_{room_id}")],
+            [InlineKeyboardButton(text=t(uid, "btn_home"), callback_data="home")]
+        ])
+        await bot.edit_message_text(
+            chat_id=chat_id, message_id=message_id,
+            text=t(uid, "no_player_after_30"), reply_markup=kb
+        )
+    except asyncio.CancelledError:
+        pass
+    except Exception:
+        pass
+
+
 @router.callback_query(F.data == "random_play")
 async def menu_random(c: types.CallbackQuery):
     uid = c.from_user.id
@@ -1604,6 +1631,13 @@ async def menu_random(c: types.CallbackQuery):
 
     if waiting:
         code = waiting[0]['room_id']
+        # إلغاء مهمة الانتظار 30 ثانية لهذه الغرفة (انضم لاعب ثانٍ)
+        tsk = random_wait_tasks.pop(code, None)
+        if tsk and not tsk.done():
+            try:
+                tsk.cancel()
+            except Exception:
+                pass
         u_name = user[0]['player_name']
         db_query("INSERT INTO room_players (room_id, user_id, player_name, is_ready) VALUES (%s, %s, %s, TRUE)",
                  (code, uid, u_name), commit=True)
@@ -1623,10 +1657,10 @@ async def menu_random(c: types.CallbackQuery):
                  (code, uid), commit=True)
         db_query("INSERT INTO room_players (room_id, user_id, player_name, is_ready) VALUES (%s, %s, %s, TRUE)",
                  (code, uid, u_name), commit=True)
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text=t(uid, "btn_home"), callback_data="home")]
-        ])
-        await c.message.edit_text(t(uid, "🤌🏻اصبر شوي "), reply_markup=kb)
+        await c.message.edit_text(t(uid, "random_wait_30"), reply_markup=InlineKeyboardMarkup(inline_keyboard=[]))
+        random_wait_tasks[code] = asyncio.create_task(
+            _random_wait_30_sec(code, uid, c.message.message_id, c.message.chat.id, c.bot)
+        )
 
 
 @router.callback_query(F.data == "menu_friends")
@@ -1676,6 +1710,12 @@ async def random_search_confirm(c: types.CallbackQuery):
         LIMIT 1""", (uid,))
     if waiting:
         code = waiting[0]['room_id']
+        tsk = random_wait_tasks.pop(code, None)
+        if tsk and not tsk.done():
+            try:
+                tsk.cancel()
+            except Exception:
+                pass
         u_name = user[0]['player_name']
         db_query("INSERT INTO room_players (room_id, user_id, player_name, is_ready) VALUES (%s, %s, %s, TRUE)",
                  (code, uid, u_name), commit=True)
@@ -1683,7 +1723,7 @@ async def random_search_confirm(c: types.CallbackQuery):
         all_players = db_query("SELECT user_id FROM room_players WHERE room_id = %s", (code,))
         for p in all_players:
             try:
-                await c.bot.send_message(p['user_id'], "🎮 بدأت اللعبة! استعد...")
+                await c.bot.send_message(p['user_id'], t(p['user_id'], "game_starting_2p"))
             except Exception:
                 pass
         from handlers.room_2p import start_new_round
@@ -1695,11 +1735,69 @@ async def random_search_confirm(c: types.CallbackQuery):
                  (code, uid), commit=True)
         db_query("INSERT INTO room_players (room_id, user_id, player_name, is_ready) VALUES (%s, %s, %s, TRUE)",
                  (code, uid, u_name), commit=True)
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text=t(uid, "no_players_offer_bot_btn"), callback_data=f"play_vs_bot_{code}")],
-            [InlineKeyboardButton(text=t(uid, "btn_home"), callback_data="home")]
-        ])
-        await c.message.edit_text(t(uid, "no_players_offer_bot"), reply_markup=kb)
+        await c.message.edit_text(t(uid, "random_wait_30"), reply_markup=InlineKeyboardMarkup(inline_keyboard=[]))
+        random_wait_tasks[code] = asyncio.create_task(
+            _random_wait_30_sec(code, uid, c.message.message_id, c.message.chat.id, c.bot)
+        )
+
+
+@router.callback_query(F.data.startswith("random_retry_"))
+async def random_retry(c: types.CallbackQuery):
+    """طلب لعب عشوائي مجدداً بعد انتهاء الـ 30 ثانية: مغادرة الغرفة ثم بحث كـ menu_random."""
+    uid = c.from_user.id
+    room_id = (c.data or "").replace("random_retry_", "").strip()
+    if not room_id:
+        await c.answer(t(uid, "room_not_found"), show_alert=True)
+        return
+    tsk = random_wait_tasks.pop(room_id, None)
+    if tsk and not tsk.done():
+        try:
+            tsk.cancel()
+        except Exception:
+            pass
+    db_query("DELETE FROM room_players WHERE room_id = %s AND user_id = %s", (room_id, uid), commit=True)
+    still = db_query("SELECT 1 FROM room_players WHERE room_id = %s", (room_id,))
+    if not still:
+        db_query("DELETE FROM rooms WHERE room_id = %s", (room_id,), commit=True)
+    user = db_query("SELECT * FROM users WHERE user_id = %s", (uid,))
+    if not user:
+        await c.answer(t(uid, "room_not_found"), show_alert=True)
+        return
+    waiting = db_query("""
+    SELECT r.room_id FROM rooms r 
+    WHERE r.max_players = 2 AND r.status = 'waiting' AND r.is_random = TRUE 
+    AND NOT EXISTS (SELECT 1 FROM room_players rp WHERE rp.room_id = r.room_id AND rp.user_id = %s) 
+    LIMIT 1""", (uid,))
+    if waiting:
+        code = waiting[0]['room_id']
+        tsk2 = random_wait_tasks.pop(code, None)
+        if tsk2 and not tsk2.done():
+            try:
+                tsk2.cancel()
+            except Exception:
+                pass
+        u_name = user[0]['player_name']
+        db_query("INSERT INTO room_players (room_id, user_id, player_name, is_ready) VALUES (%s, %s, %s, TRUE)",
+                 (code, uid, u_name), commit=True)
+        db_query("UPDATE rooms SET status = 'playing' WHERE room_id = %s", (code,), commit=True)
+        for p in db_query("SELECT user_id FROM room_players WHERE room_id = %s", (code,)):
+            try:
+                await c.bot.send_message(p['user_id'], t(p['user_id'], "game_starting_2p"))
+            except Exception:
+                pass
+        from handlers.room_2p import start_new_round
+        await start_new_round(code, c.bot, start_turn_idx=0)
+    else:
+        code = generate_room_code()
+        u_name = user[0]['player_name']
+        db_query("INSERT INTO rooms (room_id, creator_id, max_players, score_limit, status, is_random) VALUES (%s, %s, 2, 0, 'waiting', TRUE)",
+                 (code, uid), commit=True)
+        db_query("INSERT INTO room_players (room_id, user_id, player_name, is_ready) VALUES (%s, %s, %s, TRUE)",
+                 (code, uid, u_name), commit=True)
+        await c.message.edit_text(t(uid, "random_wait_30"), reply_markup=InlineKeyboardMarkup(inline_keyboard=[]))
+        random_wait_tasks[code] = asyncio.create_task(
+            _random_wait_30_sec(code, uid, c.message.message_id, c.message.chat.id, c.bot)
+        )
 
 
 @router.callback_query(F.data.startswith("play_vs_bot"))
