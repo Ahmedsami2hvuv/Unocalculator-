@@ -802,131 +802,110 @@ def _normalize_join_code(payload: str) -> str:
     return code.upper() if code else ""
 
 
-@router.message(Command("start"))
-async def cmd_start_with_deeplink(message: types.Message, state: FSMContext, command: CommandObject = None):
-    """معالجة /start مع رابط الدعوة: join_، profile_، add_ (أزرار القناة: حساب اللاعب، العب معي، لايك)"""
-    # استخراج الـ payload من command.args (الطريقة الصحيحة عند فتح الرابط من القناة) أو من النص
-    payload = ""
-    if command and getattr(command, "args", None):
-        payload = (command.args or "").strip()
-    if not payload and message.text:
-        text = (message.text or "").strip()
-        if text.startswith("/start"):
-            rest = text[6:].strip()
-            if rest:
-                payload = unquote(rest.split(maxsplit=1)[0] if rest.split() else rest)
-    if payload:
-        logger.info("cmd_start: payload=%s uid=%s", payload[:80], message.from_user.id)
-    parts = ["/start", payload] if payload else [message.text or "/start"]
-    # روابط من القناة: حساب اللاعب (بروفايل)، أو لايك، أو العب معي
-    if len(parts) >= 2 and payload:
-        if payload.startswith("like_"):
-            try:
-                post_id = int(payload.replace("like_", ""))
-            except ValueError:
-                post_id = None
+async def process_start_deeplink(message: types.Message, payload: str, state: FSMContext) -> bool:
+    """معالجة روابط أزرار القناة (like_، profile_، join_). تُستدعى من معالج /start أو من community_publish.
+    تُرجع True إذا تمت المعالجة وتم إرسال رد للمستخدم."""
+    if not payload or not isinstance(payload, str):
+        return False
+    payload = payload.strip()
+    if payload.startswith("like_"):
+        try:
+            post_id = int(payload.replace("like_", ""))
+        except ValueError:
+            post_id = None
+        if post_id:
+            row = db_query("SELECT publisher_uid, channel_id, message_id, likes_count FROM channel_posts WHERE id = %s", (post_id,))
+            if row:
+                db_query(
+                    "UPDATE channel_posts SET likes_count = COALESCE(likes_count, 0) + 1 WHERE id = %s",
+                    (post_id,), commit=True
+                )
+                publisher_uid = row[0]["publisher_uid"]
+                ch_id = row[0]["channel_id"]
+                msg_id = row[0]["message_id"]
+                new_count = (row[0].get("likes_count") or 0) + 1
+                try:
+                    await message.bot.send_message(
+                        publisher_uid,
+                        f"❤️ منشورك حصل على لايك! العدد الحالي: {new_count}"
+                    )
+                except Exception:
+                    pass
+                try:
+                    r2 = db_query(
+                        "SELECT publisher_uid, add_profile, join_code FROM channel_posts WHERE id = %s",
+                        (post_id,)
+                    )
+                    if r2:
+                        uid_pub = r2[0]["publisher_uid"]
+                        add_p = r2[0].get("add_profile", True)
+                        jc = r2[0].get("join_code")
+                        new_kb = _channel_post_buttons(uid_pub, add_p, jc, post_id=post_id, likes_count=new_count)
+                        if new_kb:
+                            try:
+                                _ch = int(ch_id) if str(ch_id).lstrip("-").isdigit() else ch_id
+                                await message.bot.edit_message_reply_markup(chat_id=_ch, message_id=msg_id, reply_markup=new_kb)
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+                await message.answer(f"❤️ تم! عدد لايكات المنشور: {new_count}")
+                return True
+        await message.answer("✅ شكراً!")
+        return True
+    if payload.startswith("profile_") or payload.startswith("add_"):
+        rest = payload.split("_", 1)[1]
+        post_id = None
+        target_id = None
+        lb_back = None
+        try:
+            rest_parts = [p for p in rest.split("_") if p]
+            if rest_parts:
+                try:
+                    target_id = int(rest_parts[0])
+                except ValueError:
+                    target_id = None
+                if len(rest_parts) >= 2 and rest_parts[1].isdigit():
+                    post_id = int(rest_parts[1])
+                if "lb" in rest_parts:
+                    lb_i = rest_parts.index("lb")
+                    if lb_i + 1 < len(rest_parts):
+                        mode = rest_parts[lb_i + 1].strip().lower()
+                        if mode in ("global", "friends"):
+                            lb_back = "leaderboard_global" if mode == "global" else "leaderboard_friends"
+        except Exception:
+            pass
+        if target_id:
+            uid = message.from_user.id
+            if lb_back:
+                _pending_profile_back[uid] = lb_back
+            else:
+                _pending_profile_back.pop(uid, None)
             if post_id:
-                row = db_query("SELECT publisher_uid, channel_id, message_id, likes_count FROM channel_posts WHERE id = %s", (post_id,))
-                if row:
+                try:
                     db_query(
-                        "UPDATE channel_posts SET likes_count = COALESCE(likes_count, 0) + 1 WHERE id = %s",
+                        "UPDATE channel_posts SET profile_clicks_count = COALESCE(profile_clicks_count, 0) + 1 WHERE id = %s",
                         (post_id,), commit=True
                     )
-                    publisher_uid = row[0]["publisher_uid"]
-                    ch_id = row[0]["channel_id"]
-                    msg_id = row[0]["message_id"]
-                    new_count = (row[0].get("likes_count") or 0) + 1
-                    try:
-                        await message.bot.send_message(
-                            publisher_uid,
-                            f"❤️ منشورك حصل على لايك! العدد الحالي: {new_count}"
-                        )
-                    except Exception:
-                        pass
-                    try:
-                        r2 = db_query(
-                            "SELECT publisher_uid, add_profile, join_code FROM channel_posts WHERE id = %s",
-                            (post_id,)
-                        )
-                        if r2:
-                            uid_pub = r2[0]["publisher_uid"]
-                            add_p = r2[0].get("add_profile", True)
-                            jc = r2[0].get("join_code")
-                            new_kb = _channel_post_buttons(uid_pub, add_p, jc, post_id=post_id, likes_count=new_count)
-                            if new_kb:
-                                try:
-                                    _ch = int(ch_id) if str(ch_id).lstrip("-").isdigit() else ch_id
-                                    await message.bot.edit_message_reply_markup(chat_id=_ch, message_id=msg_id, reply_markup=new_kb)
-                                except Exception:
-                                    pass
-                    except Exception:
-                        pass
-                    await message.answer(f"❤️ تم! عدد لايكات المنشور: {new_count}")
-                    return
-            await message.answer("✅ شكراً!")
-            return
-        if payload.startswith("profile_") or payload.startswith("add_"):
-            rest = payload.split("_", 1)[1]
-            post_id = None
-            target_id = None
-            lb_back = None
-            # صيغ مدعومة:
-            # profile_<target_id>
-            # profile_<target_id>_<post_id>  (من منشور القناة)
-            # profile_<target_id>_lb_<global|friends> (من لوحة المتصدرين)
-            try:
-                rest_parts = [p for p in rest.split("_") if p]
-                if rest_parts:
-                    # target_id دائماً أول جزء
-                    try:
-                        target_id = int(rest_parts[0])
-                    except ValueError:
-                        target_id = None
-                    # post_id إذا كان الجزء الثاني رقماً
-                    if len(rest_parts) >= 2 and rest_parts[1].isdigit():
-                        post_id = int(rest_parts[1])
-                    # رجوع للمتصدرين: ..._lb_global أو ..._lb_friends
-                    if "lb" in rest_parts:
-                        lb_i = rest_parts.index("lb")
-                        if lb_i + 1 < len(rest_parts):
-                            mode = rest_parts[lb_i + 1].strip().lower()
-                            if mode in ("global", "friends"):
-                                lb_back = "leaderboard_global" if mode == "global" else "leaderboard_friends"
-            except Exception:
-                pass
-            if target_id:
-                # حفظ زر الرجوع المؤقت (يُستخدم عند بناء كيبورد البروفايل)
-                uid = message.from_user.id
-                if lb_back:
-                    _pending_profile_back[uid] = lb_back
-                else:
-                    _pending_profile_back.pop(uid, None)
-                if post_id:
-                    try:
-                        db_query(
-                            "UPDATE channel_posts SET profile_clicks_count = COALESCE(profile_clicks_count, 0) + 1 WHERE id = %s",
-                            (post_id,), commit=True
-                        )
-                    except Exception:
-                        pass
-                target = db_query("SELECT * FROM users WHERE user_id = %s", (target_id,))
-                if target:
-                    t_user = target[0]
-                    profile_text = _build_profile_text(uid, t_user, target_id)
-                    kb = _build_profile_kb(uid, target_id, from_channel=True)
-                    await message.answer(profile_text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
-                    return
-                else:
-                    await message.answer("👤 اللاعب غير موجود أو حذف حسابه.")
-                    return
+                except Exception:
+                    pass
+            target = db_query("SELECT * FROM users WHERE user_id = %s", (target_id,))
+            if target:
+                t_user = target[0]
+                profile_text = _build_profile_text(uid, t_user, target_id)
+                kb = _build_profile_kb(uid, target_id, from_channel=True)
+                await message.answer(profile_text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+                return True
+            else:
+                await message.answer("👤 اللاعب غير موجود أو حذف حسابه.")
+                return True
     if payload.startswith("join_"):
         code = _normalize_join_code(payload)
         if code:
             user = db_query("SELECT * FROM users WHERE user_id = %s", (message.from_user.id,))
             if user and user[0].get("is_registered"):
                 await _join_room_by_code(message, code, user[0])
-                return
-            # مستخدم جديد أو موجود لكن غير مسجّل: نحفظ كود الغرفة (state + DB) ونعرض تسجيل/دخول
+                return True
             if not user:
                 db_query(
                     "INSERT INTO users (user_id, username, is_registered) VALUES (%s, %s, FALSE)",
@@ -949,9 +928,27 @@ async def cmd_start_with_deeplink(message: types.Message, state: FSMContext, com
             )
             welcome = t(uid, "welcome_new") + "\n\n" + t(uid, "invite_pending_room")
             await message.answer(welcome, reply_markup=kb)
-            return
+            return True
         else:
             await message.answer("⚠️ رابط الانضمام غير صالح أو انتهت صلاحية الغرفة. أرسل /start للقائمة.")
+            return True
+    return False
+
+
+@router.message(Command("start"))
+async def cmd_start_with_deeplink(message: types.Message, state: FSMContext, command: CommandObject = None):
+    """معالجة /start مع رابط الدعوة (أزرار القناة تُعالَج أولاً في community_publish)."""
+    payload = ""
+    if command and getattr(command, "args", None):
+        payload = (command.args or "").strip()
+    if not payload and message.text:
+        text = (message.text or "").strip()
+        if text.startswith("/start") and len(text) > 6:
+            rest = text[6:].strip()
+            if rest:
+                payload = unquote(rest.split(maxsplit=1)[0] if rest.split() else rest)
+    if payload and (payload.startswith("like_") or payload.startswith("profile_") or payload.startswith("add_") or payload.startswith("join_")):
+        if await process_start_deeplink(message, payload, state):
             return
     uid = message.from_user.id
     try:
