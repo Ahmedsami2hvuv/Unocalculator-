@@ -4,6 +4,7 @@
 """
 import os
 import html
+import json
 from aiogram import Router, types, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -186,6 +187,7 @@ def _admin_menu_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📢 اذاعة بث للجميع", callback_data="admin_broadcast")],
         [InlineKeyboardButton(text="📡 اختبار النشر في القناة", callback_data="admin_test_publish")],
+        [InlineKeyboardButton(text="📋 التبليغات", callback_data="admin_reports")],
         [InlineKeyboardButton(text="📊 عدد اللاعبين وإحصائيات", callback_data="admin_stats")],
         [InlineKeyboardButton(text="👥 قائمة اللاعبين / بحث وتعديل", callback_data="admin_players")],
         [InlineKeyboardButton(text="🛏 الغرف المفتوحة والمتروكة", callback_data="admin_rooms")],
@@ -410,6 +412,210 @@ async def admin_stats(c: types.CallbackQuery):
     await c.answer()
 
 
+# --- التبليغات: قائمة وتصفح وعرض وحظر المبلغ عليه ---
+REPORTS_PAGE_SIZE = 10
+
+def _reports_count():
+    try:
+        r = db_query("SELECT COUNT(*) AS c FROM reports")
+        return r[0]["c"] if r else 0
+    except Exception:
+        return 0
+
+def _reports_list(offset: int = 0, limit: int = REPORTS_PAGE_SIZE):
+    try:
+        return db_query(
+            """SELECT id, reporter_id, reported_id, report_type, note, status, created_at
+               FROM reports ORDER BY created_at DESC LIMIT %s OFFSET %s""",
+            (limit, offset)
+        ) or []
+    except Exception:
+        return []
+
+
+@router.callback_query(F.data == "admin_reports")
+async def admin_reports_list(c: types.CallbackQuery, state: FSMContext):
+    if not _admin_only(c):
+        return await c.answer("⛔ غير مسموح.", show_alert=True)
+    await state.clear()
+    total = _reports_count()
+    if total == 0:
+        await c.message.edit_text(
+            "📋 لا توجد تبليغات.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔙 رجوع", callback_data="admin_back")]
+            ])
+        )
+        return await c.answer()
+    rows = _reports_list(0, REPORTS_PAGE_SIZE)
+    text = f"📋 **التبليغات** ({total})\n\nاضغط على تبليغ لعرض التفاصيل.\n\n"
+    kb = []
+    for r in rows:
+        rep_type = r.get("report_type") or "—"
+        rid = r.get("id")
+        created = (r.get("created_at") or "")[:16] if r.get("created_at") else "—"
+        text += f"• #{rid} — {rep_type} — {created}\n"
+        kb.append([InlineKeyboardButton(text=f"📋 عرض #{rid}", callback_data=f"admin_report_view_{rid}")])
+    if total > REPORTS_PAGE_SIZE:
+        kb.append([InlineKeyboardButton(text="▶️ التالي", callback_data="admin_reports_page_1")])
+    kb.append([InlineKeyboardButton(text="🔙 رجوع", callback_data="admin_back")])
+    await c.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+    await c.answer()
+
+
+@router.callback_query(F.data.startswith("admin_reports_page_"))
+async def admin_reports_page(c: types.CallbackQuery, state: FSMContext):
+    if not _admin_only(c):
+        return await c.answer("⛔ غير مسموح.", show_alert=True)
+    try:
+        page = int(c.data.replace("admin_reports_page_", "").strip())
+    except ValueError:
+        page = 0
+    total = _reports_count()
+    offset = page * REPORTS_PAGE_SIZE
+    if offset >= total:
+        page = 0
+        offset = 0
+    rows = _reports_list(offset, REPORTS_PAGE_SIZE)
+    text = f"📋 **التبليغات** (صفحة {page + 1})\n\n"
+    kb = []
+    for r in rows:
+        rid = r.get("id")
+        rep_type = r.get("report_type") or "—"
+        created = (r.get("created_at") or "")[:16] if r.get("created_at") else "—"
+        text += f"• #{rid} — {rep_type} — {created}\n"
+        kb.append([InlineKeyboardButton(text=f"📋 عرض #{rid}", callback_data=f"admin_report_view_{rid}")])
+    if page > 0:
+        kb.append([InlineKeyboardButton(text="◀️ السابق", callback_data=f"admin_reports_page_{page - 1}")])
+    if offset + len(rows) < total:
+        kb.append([InlineKeyboardButton(text="▶️ التالي", callback_data=f"admin_reports_page_{page + 1}")])
+    kb.append([InlineKeyboardButton(text="🔙 رجوع", callback_data="admin_reports")])
+    await c.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+    await c.answer()
+
+
+@router.callback_query(F.data.startswith("admin_report_view_"))
+async def admin_report_view(c: types.CallbackQuery):
+    if not _admin_only(c):
+        return await c.answer("⛔ غير مسموح.", show_alert=True)
+    try:
+        report_id = int(c.data.replace("admin_report_view_", "").strip())
+    except ValueError:
+        return await c.answer("خطأ.", show_alert=True)
+    row = db_query("SELECT * FROM reports WHERE id = %s", (report_id,))
+    if not row:
+        return await c.answer("التبليغ غير موجود.", show_alert=True)
+    r = row[0]
+    reporter_id = r.get("reporter_id")
+    reported_id = r.get("reported_id")
+    rep_type = r.get("report_type") or "—"
+    note = (r.get("note") or "").strip() or "—"
+    photos_json = r.get("photos_json")
+    reporter_row = db_query("SELECT * FROM users WHERE user_id = %s", (reporter_id,))
+    reported_row = db_query("SELECT * FROM users WHERE user_id = %s", (reported_id,))
+    rep_detail = _user_detail_text(reporter_row[0]) if reporter_row else f"🆔 {reporter_id}"
+    reped_detail = _user_detail_text(reported_row[0]) if reported_row else f"🆔 {reported_id}"
+    text = (
+        f"📋 <b>تبليغ #{report_id}</b>\n\n"
+        f"<b>نوع التبليغ:</b> {html.escape(rep_type)}\n\n"
+        f"<b>👤 مقدّم التبليغ:</b>\n{rep_detail}\n\n"
+        f"<b>👤 المبلغ عليه:</b>\n{reped_detail}\n\n"
+        f"<b>📝 الملاحظة:</b>\n{html.escape(note)}\n\n"
+        "الصور أدناه (إن وُجدت)."
+    )
+    kb = [
+        [InlineKeyboardButton(text="🚫 حظر المبلغ عليه", callback_data=f"admin_report_ban_{report_id}")],
+        [InlineKeyboardButton(text="✅ تمت المراجعة", callback_data=f"admin_report_done_{report_id}")],
+        [InlineKeyboardButton(text="◀️ السابق", callback_data=f"admin_report_prev_{report_id}")],
+        [InlineKeyboardButton(text="▶️ التالي", callback_data=f"admin_report_next_{report_id}")],
+        [InlineKeyboardButton(text="🔙 قائمة التبليغات", callback_data="admin_reports")],
+    ]
+    await c.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="HTML")
+    if photos_json:
+        try:
+            fids = json.loads(photos_json)
+            for fid in (fids or [])[:10]:
+                try:
+                    await c.bot.send_photo(c.from_user.id, fid)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+    await c.answer()
+
+
+@router.callback_query(F.data.startswith("admin_report_ban_"))
+async def admin_report_ban(c: types.CallbackQuery):
+    if not _admin_only(c):
+        return await c.answer("⛔ غير مسموح.", show_alert=True)
+    try:
+        report_id = int(c.data.replace("admin_report_ban_", "").strip())
+    except ValueError:
+        return await c.answer("خطأ.", show_alert=True)
+    row = db_query("SELECT reported_id FROM reports WHERE id = %s", (report_id,))
+    if not row:
+        return await c.answer("التبليغ غير موجود.", show_alert=True)
+    reported_id = row[0]["reported_id"]
+    try:
+        db_query("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_banned BOOLEAN DEFAULT FALSE", commit=True)
+    except Exception:
+        try:
+            db_query("ALTER TABLE users ADD COLUMN is_banned BOOLEAN DEFAULT FALSE", commit=True)
+        except Exception:
+            pass
+    db_query("UPDATE users SET is_banned = TRUE WHERE user_id = %s", (reported_id,), commit=True)
+    await c.answer("✅ تم حظر اللاعب المبلغ عليه.", show_alert=True)
+    c.data = f"admin_report_view_{report_id}"
+    await admin_report_view(c)
+
+
+@router.callback_query(F.data.startswith("admin_report_done_"))
+async def admin_report_done(c: types.CallbackQuery):
+    if not _admin_only(c):
+        return await c.answer("⛔ غير مسموح.", show_alert=True)
+    try:
+        report_id = int(c.data.replace("admin_report_done_", "").strip())
+    except ValueError:
+        return await c.answer("خطأ.", show_alert=True)
+    try:
+        db_query("UPDATE reports SET status = 'read' WHERE id = %s", (report_id,), commit=True)
+    except Exception:
+        pass
+    await c.answer("✅ تم تعليم التبليغ كمراجَع.")
+    c.data = f"admin_report_view_{report_id}"
+    await admin_report_view(c)
+
+
+@router.callback_query(F.data.startswith("admin_report_prev_"))
+async def admin_report_prev(c: types.CallbackQuery):
+    if not _admin_only(c):
+        return await c.answer("⛔ غير مسموح.", show_alert=True)
+    try:
+        report_id = int(c.data.replace("admin_report_prev_", "").strip())
+    except ValueError:
+        return await c.answer()
+    prev = db_query("SELECT id FROM reports WHERE id < %s ORDER BY id DESC LIMIT 1", (report_id,))
+    if not prev:
+        return await c.answer("لا يوجد تبليغ سابق.", show_alert=True)
+    c.data = f"admin_report_view_{prev[0]['id']}"
+    await admin_report_view(c)
+
+
+@router.callback_query(F.data.startswith("admin_report_next_"))
+async def admin_report_next(c: types.CallbackQuery):
+    if not _admin_only(c):
+        return await c.answer("⛔ غير مسموح.", show_alert=True)
+    try:
+        report_id = int(c.data.replace("admin_report_next_", "").strip())
+    except ValueError:
+        return await c.answer()
+    nxt = db_query("SELECT id FROM reports WHERE id > %s ORDER BY id ASC LIMIT 1", (report_id,))
+    if not nxt:
+        return await c.answer("لا يوجد تبليغ تالي.", show_alert=True)
+    c.data = f"admin_report_view_{nxt[0]['id']}"
+    await admin_report_view(c)
+
+
 # --- قائمة اللاعبين مع ترقيم (التالي / السابق) ---
 PLAYERS_PAGE_SIZE = 15
 
@@ -560,6 +766,8 @@ def _user_detail_text(u: dict) -> str:
     pts = u.get("online_points", 0)
     reg = u.get("is_registered")
     lang = _esc(u.get("language") or "ar")
+    banned = u.get("is_banned") in (True, 1, "t", "true")
+    ban_line = "\n🚫 <b>محظور:</b> نعم" if banned else "\n🚫 <b>محظور:</b> لا"
     uid_link = f' {uid} — اضغط للتواصل مع اللاعب '
     return (
         "👤 معلومات اللاعب\n\n"
@@ -571,11 +779,12 @@ def _user_detail_text(u: dict) -> str:
         f"⭐ النقاط: {pts}\n"
         f"✅ مسجل: {reg}\n"
         f"🌐 اللغة: {lang}"
+        f"{ban_line}"
     )
 
 
-def _admin_user_detail_kb(uid: int):
-    return [
+def _admin_user_detail_kb(uid: int, is_banned: bool = False):
+    rows = [
         [InlineKeyboardButton(text="📉 من يتابع (قائمة)", callback_data=f"admin_list_following_{uid}")],
         [InlineKeyboardButton(text="📈 من يتابعونه (قائمة)", callback_data=f"admin_list_followers_{uid}")],
         [InlineKeyboardButton(text="✏️ تعديل الاسم", callback_data=f"admin_ef_name_{uid}")],
@@ -583,28 +792,35 @@ def _admin_user_detail_kb(uid: int):
         [InlineKeyboardButton(text="✏️ تعديل كلمة السر", callback_data=f"admin_ef_password_{uid}")],
         [InlineKeyboardButton(text="✏️ تعديل النقاط", callback_data=f"admin_ef_points_{uid}")],
         [InlineKeyboardButton(text="🔓 إصلاح الدخول", callback_data=f"admin_fix_login_{uid}")],
-        [InlineKeyboardButton(text="🔙 رجوع للقائمة", callback_data="admin_players")],
     ]
+    if is_banned:
+        rows.append([InlineKeyboardButton(text="✅ إلغاء حظر اللاعب", callback_data=f"admin_unban_{uid}")])
+    else:
+        rows.append([InlineKeyboardButton(text="🚫 حظر اللاعب", callback_data=f"admin_ban_{uid}")])
+    rows.append([InlineKeyboardButton(text="🔙 رجوع للقائمة", callback_data="admin_players")])
+    return rows
 
 
 async def _send_admin_user_detail(bot, chat_id: int, user: dict, admin_uid: int):
     uid = user.get("user_id")
+    is_banned = user.get("is_banned") in (True, 1, "t", "true")
     followers = db_query("SELECT COUNT(*) AS c FROM follows WHERE following_id = %s", (uid,))
     following = db_query("SELECT COUNT(*) AS c FROM follows WHERE follower_id = %s", (uid,))
     fc = followers[0]["c"] if followers else 0
     ing = following[0]["c"] if following else 0
     text = _user_detail_text(user) + f"\n\n📈 يتابعونه: {fc} | 📉 يتابع: {ing}"
-    await bot.send_message(chat_id, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=_admin_user_detail_kb(uid)), parse_mode="HTML")
+    await bot.send_message(chat_id, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=_admin_user_detail_kb(uid, is_banned)), parse_mode="HTML")
 
 
 async def _edit_admin_user_detail(message, user: dict, admin_uid: int):
     uid = user.get("user_id")
+    is_banned = user.get("is_banned") in (True, 1, "t", "true")
     followers = db_query("SELECT COUNT(*) AS c FROM follows WHERE following_id = %s", (uid,))
     following = db_query("SELECT COUNT(*) AS c FROM follows WHERE follower_id = %s", (uid,))
     fc = followers[0]["c"] if followers else 0
     ing = following[0]["c"] if following else 0
     text = _user_detail_text(user) + f"\n\n📈 يتابعونه: {fc} | 📉 يتابع: {ing}"
-    await message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=_admin_user_detail_kb(uid)), parse_mode="HTML")
+    await message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=_admin_user_detail_kb(uid, is_banned)), parse_mode="HTML")
 
 
 @router.callback_query(F.data.startswith("admin_list_following_"))
@@ -709,25 +925,55 @@ async def admin_view_user(c: types.CallbackQuery, state: FSMContext):
         user = db_query("SELECT * FROM users WHERE user_id = %s", (uid,))
         if not user:
             return await c.answer("❌ اللاعب غير موجود.", show_alert=True)
+        u = user[0]
+        is_banned = u.get("is_banned") in (True, 1, "t", "true")
         followers = db_query("SELECT COUNT(*) AS c FROM follows WHERE following_id = %s", (uid,))
         following = db_query("SELECT COUNT(*) AS c FROM follows WHERE follower_id = %s", (uid,))
         fc = followers[0]["c"] if followers else 0
         ing = following[0]["c"] if following else 0
-        text = _user_detail_text(user[0]) + f"\n\n📈 يتابعونه: {fc} | 📉 يتابع: {ing}"
-        kb = [
-            [InlineKeyboardButton(text="📉 من يتابع (قائمة)", callback_data=f"admin_list_following_{uid}")],
-            [InlineKeyboardButton(text="📈 من يتابعونه (قائمة)", callback_data=f"admin_list_followers_{uid}")],
-            [InlineKeyboardButton(text="✏️ تعديل الاسم", callback_data=f"admin_ef_name_{uid}")],
-            [InlineKeyboardButton(text="✏️ تعديل اليوزر نيم", callback_data=f"admin_ef_username_{uid}")],
-            [InlineKeyboardButton(text="✏️ تعديل كلمة السر", callback_data=f"admin_ef_password_{uid}")],
-            [InlineKeyboardButton(text="✏️ تعديل النقاط", callback_data=f"admin_ef_points_{uid}")],
-            [InlineKeyboardButton(text="🔓 إصلاح الدخول", callback_data=f"admin_fix_login_{uid}")],
-            [InlineKeyboardButton(text="🔙 رجوع", callback_data="admin_players")],
-        ]
+        text = _user_detail_text(u) + f"\n\n📈 يتابعونه: {fc} | 📉 يتابع: {ing}"
+        kb = _admin_user_detail_kb(uid, is_banned)
         await c.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="HTML")
     except Exception as e:
         await c.answer(f"خطأ: {e}", show_alert=True)
     await c.answer()
+
+
+@router.callback_query(F.data.startswith("admin_ban_"))
+async def admin_ban_user(c: types.CallbackQuery):
+    if not _admin_only(c):
+        return await c.answer("⛔ غير مسموح.", show_alert=True)
+    try:
+        uid = int(c.data.replace("admin_ban_", "").strip())
+    except ValueError:
+        return await c.answer("خطأ.", show_alert=True)
+    try:
+        db_query("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_banned BOOLEAN DEFAULT FALSE", commit=True)
+    except Exception:
+        try:
+            db_query("ALTER TABLE users ADD COLUMN is_banned BOOLEAN DEFAULT FALSE", commit=True)
+        except Exception:
+            pass
+    db_query("UPDATE users SET is_banned = TRUE WHERE user_id = %s", (uid,), commit=True)
+    await c.answer("✅ تم حظر اللاعب.", show_alert=True)
+    user = db_query("SELECT * FROM users WHERE user_id = %s", (uid,))
+    if user:
+        await _edit_admin_user_detail(c.message, user[0], c.from_user.id)
+
+
+@router.callback_query(F.data.startswith("admin_unban_"))
+async def admin_unban_user(c: types.CallbackQuery):
+    if not _admin_only(c):
+        return await c.answer("⛔ غير مسموح.", show_alert=True)
+    try:
+        uid = int(c.data.replace("admin_unban_", "").strip())
+    except ValueError:
+        return await c.answer("خطأ.", show_alert=True)
+    db_query("UPDATE users SET is_banned = FALSE WHERE user_id = %s", (uid,), commit=True)
+    await c.answer("✅ تم إلغاء حظر اللاعب.", show_alert=True)
+    user = db_query("SELECT * FROM users WHERE user_id = %s", (uid,))
+    if user:
+        await _edit_admin_user_detail(c.message, user[0], c.from_user.id)
 
 
 @router.callback_query(F.data.startswith("admin_fix_login_"))
@@ -745,21 +991,14 @@ async def admin_fix_login(c: types.CallbackQuery):
     await c.answer("✅ تم إصلاح الدخول.", show_alert=True)
     user = db_query("SELECT * FROM users WHERE user_id = %s", (uid,))
     if user:
+        u = user[0]
+        is_banned = u.get("is_banned") in (True, 1, "t", "true")
         followers = db_query("SELECT COUNT(*) AS c FROM follows WHERE following_id = %s", (uid,))
         following = db_query("SELECT COUNT(*) AS c FROM follows WHERE follower_id = %s", (uid,))
         fc = followers[0]["c"] if followers else 0
         ing = following[0]["c"] if following else 0
-        text = _user_detail_text(user[0]) + f"\n\n📈 يتابعونه: {fc} | 📉 يتابع: {ing}"
-        kb = [
-            [InlineKeyboardButton(text="📉 من يتابع", callback_data=f"admin_list_following_{uid}")],
-            [InlineKeyboardButton(text="📈 من يتابعونه", callback_data=f"admin_list_followers_{uid}")],
-            [InlineKeyboardButton(text="✏️ تعديل الاسم", callback_data=f"admin_ef_name_{uid}")],
-            [InlineKeyboardButton(text="✏️ تعديل اليوزر نيم", callback_data=f"admin_ef_username_{uid}")],
-            [InlineKeyboardButton(text="✏️ تعديل كلمة السر", callback_data=f"admin_ef_password_{uid}")],
-            [InlineKeyboardButton(text="✏️ تعديل النقاط", callback_data=f"admin_ef_points_{uid}")],
-            [InlineKeyboardButton(text="🔓 إصلاح الدخول", callback_data=f"admin_fix_login_{uid}")],
-            [InlineKeyboardButton(text="🔙 رجوع", callback_data="admin_players")],
-        ]
+        text = _user_detail_text(u) + f"\n\n📈 يتابعونه: {fc} | 📉 يتابع: {ing}"
+        kb = _admin_user_detail_kb(uid, is_banned)
         await c.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="HTML")
 
 
