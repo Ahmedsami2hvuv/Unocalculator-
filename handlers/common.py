@@ -206,7 +206,7 @@ async def channel_subscribe_callback_middleware(handler, event: types.CallbackQu
         return await handler(event, data)
     # مجتمع الأونو والنشر: نسمح بالدخول دائماً (القائمة، نشر منشور، منشوراتي، إلخ)
     if cd in ("community_uno_menu", "player_post_start", "post_toggle_profile", "post_toggle_play",
-              "post_ready_send", "post_back", "my_posts_list", "player_posts_channel") or cd.startswith("admin_"):
+              "post_ready_send", "post_back", "my_posts_list", "player_posts_channel") or cd.startswith("admin_") or cd.startswith("report_"):
         return await handler(event, data)
     user_id = event.from_user.id if event.from_user else None
     if not user_id:
@@ -563,6 +563,7 @@ def build_game_end_keyboard(replay_id: str, for_user_id: int) -> InlineKeyboardM
             pass
         kb.append([InlineKeyboardButton(text=share_btn_text, callback_data=f"share_result_{replay_id}")])
     kb.append([InlineKeyboardButton(text="🔄 لعب مرة أخرى", callback_data=f"replay_{replay_id}")])
+    kb.append([InlineKeyboardButton(text="📋 تبليغ على لاعب", callback_data=f"report_{replay_id}")])
     kb.append([InlineKeyboardButton(text=t(for_user_id, "btn_home"), callback_data="home")])
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
@@ -967,6 +968,10 @@ async def cmd_start_with_deeplink(message: types.Message, state: FSMContext, com
         except Exception:
             pass
         user = db_query("SELECT * FROM users WHERE user_id = %s", (uid,))
+    # إذا كان محظوراً، نعرض رسالة الحظر فقط
+    if user and user[0].get("is_banned") in (True, 1, "t", "true"):
+        await message.answer("🚫 تم حظرك من البوت. لا يمكنك استخدام البوت.")
+        return
     # إذا كان مسجّل الخروج، نعرض تسجيل/دخول ولا نفتح القائمة الرئيسية
     if user and user[0].get("logged_out") in (True, 1, "t", "true"):
         lang = get_lang(uid)
@@ -1202,6 +1207,9 @@ async def complete_profile_password_handler(message: types.Message, state: FSMCo
 
 async def _join_room_by_code(message, code, user_data):
     uid = message.from_user.id
+    if user_data.get("is_banned") in (True, 1, "t", "true"):
+        await message.answer("🚫 تم حظرك من البوت. لا يمكنك الانضمام للغرف.")
+        return
     room = db_query("SELECT * FROM rooms WHERE room_id = %s AND status = 'waiting'", (code,))
     if not room:
         await message.answer(t(uid, "room_not_found"))
@@ -2072,6 +2080,10 @@ async def join_input(c: types.CallbackQuery, state: FSMContext):
 @router.message(RoomStates.wait_for_code)
 async def process_join(message: types.Message, state: FSMContext):
     uid = message.from_user.id
+    user_row = db_query("SELECT * FROM users WHERE user_id = %s", (uid,))
+    if user_row and user_row[0].get("is_banned") in (True, 1, "t", "true"):
+        await state.clear()
+        return await message.answer("🚫 تم حظرك من البوت. لا يمكنك الانضمام للغرف.")
     code = message.text.strip().upper()
     room = db_query("SELECT * FROM rooms WHERE room_id = %s AND status = 'waiting'", (code,))
     if not room:
@@ -2238,6 +2250,14 @@ async def show_main_menu(message, name, user_id, cleanup=False, state=None, from
             pass
         return
     uid = user_id
+    # 2.4 إذا كان محظوراً، نعرض له رسالة الحظر فقط
+    if not from_admin and user_rows[0].get("is_banned") in (True, 1, "t", "true"):
+        target_msg = message.message if isinstance(message, types.CallbackQuery) else message
+        try:
+            await target_msg.answer("🚫 تم حظرك من البوت. لا يمكنك استخدام البوت.")
+        except Exception:
+            pass
+        return
     # 2.5 إذا كان مسجّل الخروج، نعرض له شاشة الدخول/التسجيل
     if not from_admin and user_rows[0].get("logged_out") in (True, 1, "t", "true"):
         target_msg = message.message if isinstance(message, types.CallbackQuery) else message
@@ -2809,6 +2829,14 @@ async def account_logout_confirm(c: types.CallbackQuery, state: FSMContext):
     except Exception:
         try:
             db_query("ALTER TABLE users ADD COLUMN logged_out BOOLEAN DEFAULT FALSE", commit=True)
+        except Exception:
+            pass
+    # عمود الحظر (لنظام التبليغ والإدارة)
+    try:
+        db_query("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_banned BOOLEAN DEFAULT FALSE", commit=True)
+    except Exception:
+        try:
+            db_query("ALTER TABLE users ADD COLUMN is_banned BOOLEAN DEFAULT FALSE", commit=True)
         except Exception:
             pass
     try:
