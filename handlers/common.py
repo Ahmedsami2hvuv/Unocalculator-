@@ -2262,10 +2262,10 @@ async def show_main_menu(message, name, user_id, cleanup=False, state=None, from
         [InlineKeyboardButton(text=t(uid, "btn_friends"), callback_data="social_menu")],
         [InlineKeyboardButton(text=t(uid, "btn_my_account"), callback_data="my_account"),
          InlineKeyboardButton(text=t(uid, "btn_calc"), callback_data="mode_calc")],
-        [InlineKeyboardButton(text=t(uid, "btn_bot_info"), callback_data="bot_info")],
         [InlineKeyboardButton(text=t(uid, "btn_rules"), callback_data="rules")],
         [InlineKeyboardButton(text=t(uid, "btn_leaderboard"), callback_data="leaderboard")],
         [InlineKeyboardButton(text=t(uid, "btn_change_lang"), callback_data="change_lang")],
+        [InlineKeyboardButton(text=t(uid, "btn_bot_info"), callback_data="bot_info")],
     ]
     try:
         from handlers.admin import is_admin
