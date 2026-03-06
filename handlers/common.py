@@ -807,10 +807,17 @@ class FilterInRoom(BaseFilter):
 _delete_after_tasks = set()
 
 async def _delete_message_after(bot, chat_id: int, message_id: int, seconds: int = 10):
-    """حذف رسالة بعد ثوانٍ بدون تنبيه."""
+    """حذف رسالة بعد ثوانٍ بدون تنبيه. يعيد المحاولة مرة إن فشل الحذف (مثلاً لو حُذفت من مكان آخر)."""
     try:
         await asyncio.sleep(seconds)
-        await bot.delete_message(chat_id, message_id)
+        try:
+            await bot.delete_message(chat_id, message_id)
+        except Exception:
+            await asyncio.sleep(0.5)
+            try:
+                await bot.delete_message(chat_id, message_id)
+            except Exception:
+                pass
     except asyncio.CancelledError:
         raise
     except Exception:
@@ -830,9 +837,8 @@ async def send_message_then_delete(bot, chat_id: int, text: str, delete_after_se
     """
     try:
         sent = await bot.send_message(chat_id, text, **kwargs)
-        task = asyncio.create_task(
-            _delete_message_after(bot, chat_id, sent.message_id, delete_after_seconds)
-        )
+        delete_coro = _delete_message_after(bot, chat_id, sent.message_id, delete_after_seconds)
+        task = asyncio.create_task(asyncio.shield(delete_coro))
         _delete_after_tasks.add(task)
         task.add_done_callback(lambda t: _delete_after_tasks.discard(t))
         return sent
