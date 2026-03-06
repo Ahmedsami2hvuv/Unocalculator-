@@ -410,14 +410,17 @@ def _post_options_kb(data: dict) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"👤 زر حسابي {'✓' if add_p else ''}", callback_data="post_toggle_profile")],
         [InlineKeyboardButton(text=f"🎮 العب معي {'✓' if add_play else ''}", callback_data="post_toggle_play")],
+        [InlineKeyboardButton(text="✅ تم، أرسل رسالتك الآن", callback_data="post_ready_send")],
         [InlineKeyboardButton(text="🔙 تراجع", callback_data="post_back")],
     ])
 
 
 @router.callback_query(F.data == "player_post_start")
 async def player_post_start(c: types.CallbackQuery, state: FSMContext):
+    await c.answer()
     if not _normalize_channel_target():
-        return await c.answer("⚠️ نشر المنشورات غير متاح حالياً.", show_alert=True)
+        await c.message.answer("⚠️ نشر المنشورات غير متاح حالياً. تحقق من إعدادات القناة (channel_config أو Variables).")
+        return
     _last_post_options_at[c.from_user.id] = time.time()
     await state.set_state(PlayerPostStates.waiting_options)
     await state.update_data(post_add_profile=True, post_add_play=False)
@@ -426,11 +429,10 @@ async def player_post_start(c: types.CallbackQuery, state: FSMContext):
         "• **زر حسابي:** يظهر زر يفتح بروفايلك (متابعة، طلب لعب، رجوع للقناة).\n"
         "• **العب معي:** يظهر زر من يضغطه ينضم معك في كيم ثنائي فوراً.\n\n"
         "⚠️ لا يُسمح بنشر أرقام هواتف أو كلمات تخالف المعايير.\n\n"
-        "_بعد إرسال الرسالة ستظهر لك «تم نشر منشورك» أو رسالة خطأ إن فشل النشر._",
+        "_اضغط «تم، أرسل رسالتك الآن» ثم أرسل النص أو الصورة في الرسالة التالية._",
         reply_markup=_post_options_kb({"post_add_profile": True, "post_add_play": False}),
         parse_mode="Markdown"
     )
-    await c.answer()
 
 
 @router.callback_query(F.data == "post_toggle_profile")
@@ -457,8 +459,9 @@ async def post_toggle_play(c: types.CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data == "post_ready_send")
 async def post_ready_send(c: types.CallbackQuery, state: FSMContext):
+    await c.answer()
     if await state.get_state() != PlayerPostStates.waiting_options.state:
-        return await c.answer()
+        return
     data = await state.get_data()
     add_profile = data.get("post_add_profile", True)
     add_play = data.get("post_add_play", False)
@@ -475,7 +478,6 @@ async def post_ready_send(c: types.CallbackQuery, state: FSMContext):
     await c.message.edit_text(
         "📢 أرسل الآن النص أو الصور أو الصوت أو الفيديو أو الملصقات أو أي ميديا للنشر في القناة.\n\n⚠️ لا يُسمح بنشر أرقام هواتف أو كلمات تخالف المعايير."
     )
-    await c.answer()
 
 
 @router.callback_query(F.data == "post_back")
@@ -743,6 +745,7 @@ async def player_post_receive_media_from_options(message: types.Message, state: 
 @router.message(PlayerPostStates.waiting_message, F.text)
 async def player_post_receive_text(message: types.Message, state: FSMContext):
     logger.info("player_post_receive_text: got text from user %s, state=%s", message.from_user.id, await state.get_state())
+    await message.bot.send_chat_action(message.chat.id, "typing")
     uid = message.from_user.id
     data = await state.get_data()
     add_profile = data.get("post_add_profile", True)
@@ -775,7 +778,12 @@ async def player_post_receive_text(message: types.Message, state: FSMContext):
         return
     sent_msg_id, send_err = await _send_to_channel_safe(message.bot, chat_target, text_to_send, reply_markup=reply_kb)
     if send_err:
-        await message.answer("❌ فشل النشر.\n\nتأكد أن البوت مضاف في القناة كـ **مسؤول** وله صلاحية «نشر رسائل». الخطأ: " + send_err[:200])
+        await message.answer(
+            "❌ فشل النشر في القناة.\n\n"
+            "• أضف البوت في القناة كـ **مسؤول** وامنحه صلاحية «نشر رسائل».\n"
+            "• أو جرّب من لوحة الأدمن: **اختبار النشر في القناة** لمعرفة السبب.\n\n"
+            "الخطأ: " + send_err[:250]
+        )
         return
     if sent_msg_id is not None:
         try:
