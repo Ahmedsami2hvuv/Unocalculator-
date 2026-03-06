@@ -855,9 +855,9 @@ async def player_post_receive_media_pending(message: types.Message, state: FSMCo
         except Exception:
             pass
     reply_kb = _channel_post_buttons(uid, add_profile, join_code)
-    ok, sent_msg_id = await _publish_media_to_channel(message.bot, message, name, reply_markup=reply_kb)
+    ok, sent_msg_id, err = await _publish_media_to_channel(message.bot, message, name, reply_markup=reply_kb)
     if not ok and reply_kb:
-        ok, sent_msg_id = await _publish_media_to_channel(message.bot, message, name, reply_markup=None)
+        ok, sent_msg_id, err = await _publish_media_to_channel(message.bot, message, name, reply_markup=None)
     if ok and sent_msg_id is not None:
         try:
             row = db_query(
@@ -882,7 +882,10 @@ async def player_post_receive_media_pending(message: types.Message, state: FSMCo
         kb_after.append([InlineKeyboardButton(text="🔙 رجوع للقائمة الرئيسية", callback_data="home")])
         await message.answer("✅ تم نشر منشورك في القناة.", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_after))
     else:
-        await message.answer("❌ فشل النشر. تأكد أن البوت مسؤول في القناة وله صلاحية «نشر رسائل».")
+        msg = "❌ فشل النشر. تأكد أن البوت مسؤول في القناة وله صلاحية «نشر رسائل»."
+        if err:
+            msg += f"\n\nالخطأ: {err}"
+        await message.answer(msg)
 
 
 class FilterInRoom(BaseFilter):
@@ -2694,6 +2697,7 @@ async def share_result_to_channel(c: types.CallbackQuery, state: FSMContext):
     """نشر فوزك: عرض خيارات (حسابي، العب معي) ثم انتظار رسالة اللاعب ثم النشر في القناة بالنتيجة + النص + الأزرار."""
     chat_target = _normalize_channel_target()
     if not chat_target or not BOT_USERNAME:
+        logger.warning("share_result: skipped - chat_target=%s BOT_USERNAME=%s", chat_target, bool(BOT_USERNAME))
         return await c.answer("⚠️ نشر النتائج غير متاح حالياً. سيتم تفعيله من الإدارة لاحقاً.", show_alert=True)
     replay_id = c.data.replace("share_result_", "").strip()
     rdata = replay_data.get(replay_id)
@@ -4148,9 +4152,7 @@ def _get_player_name_for_post(user_id: int, full_name: str = None) -> str:
 
 
 def _normalize_channel_target():
-    """يرجع @username للقناة إن وُجد (أفضل مع تيليجرام)، وإلا معرف القناة الرقمي."""
-    if PUBLISH_CHANNEL_USERNAME:
-        return f"@{PUBLISH_CHANNEL_USERNAME.lstrip('@')}"
+    """يرجع معرف القناة الرقمي إن وُجد (أكثر استقراراً للنشر)، وإلا @username."""
     raw = PUBLISH_CHANNEL_ID
     if raw is not None:
         try:
@@ -4160,14 +4162,16 @@ def _normalize_channel_target():
             return ch
         except (TypeError, ValueError):
             pass
+    if PUBLISH_CHANNEL_USERNAME:
+        return f"@{PUBLISH_CHANNEL_USERNAME.lstrip('@')}"
     return None
 
 
 async def _publish_media_to_channel(bot, message: types.Message, name: str, channel_id=None, reply_markup=None):
-    """ينشر محتوى الرسالة في قناة النشر. يُرجع (True, sent_message_id) عند النجاح أو (False, None)."""
+    """ينشر محتوى الرسالة في قناة النشر. يُرجع (True, sent_message_id, None) عند النجاح أو (False, None, error_str)."""
     ch = channel_id if channel_id is not None else _normalize_channel_target()
     if not ch:
-        return False, None
+        return False, None, "القناة غير مضبوطة (PUBLISH_CHANNEL_ID / USERNAME)"
     cap = f"👤 **{name}**\n\n{(message.caption or '').strip()}" if (message.caption or "").strip() else f"👤 **{name}**"
     if cap.endswith("\n\n"):
         cap = cap.rstrip()
@@ -4177,37 +4181,37 @@ async def _publish_media_to_channel(bot, message: types.Message, name: str, chan
     try:
         if message.text:
             sent = await bot.send_message(ch, f"👤 **{name}**\n\n{message.text}", **kwargs)
-            return True, sent.message_id
+            return True, sent.message_id, None
         if message.photo:
             sent = await bot.send_photo(ch, message.photo[-1].file_id, caption=cap, **kwargs)
-            return True, sent.message_id
+            return True, sent.message_id, None
         if message.voice:
             sent = await bot.send_voice(ch, message.voice.file_id, caption=cap, **kwargs)
-            return True, sent.message_id
+            return True, sent.message_id, None
         if message.video:
             sent = await bot.send_video(ch, message.video.file_id, caption=cap, **kwargs)
-            return True, sent.message_id
+            return True, sent.message_id, None
         if message.animation:
             sent = await bot.send_animation(ch, message.animation.file_id, caption=cap, **kwargs)
-            return True, sent.message_id
+            return True, sent.message_id, None
         if message.sticker:
             await bot.send_sticker(ch, message.sticker.file_id)
             sent = await bot.send_message(ch, f"👤 **{name}**", **kwargs)
-            return True, sent.message_id
+            return True, sent.message_id, None
         if message.document:
             sent = await bot.send_document(ch, message.document.file_id, caption=cap, **kwargs)
-            return True, sent.message_id
+            return True, sent.message_id, None
         if message.audio:
             sent = await bot.send_audio(ch, message.audio.file_id, caption=cap, **kwargs)
-            return True, sent.message_id
+            return True, sent.message_id, None
         if message.video_note:
             await bot.send_video_note(ch, message.video_note.file_id)
             sent = await bot.send_message(ch, f"👤 **{name}**", **kwargs)
-            return True, sent.message_id
+            return True, sent.message_id, None
     except Exception as e:
         logger.exception("player_post: _publish_media_to_channel failed for ch=%s: %s", ch, e)
-        return False, None
-    return False, None
+        return False, None, str(e).replace("'", "").strip()[:220]
+    return False, None, "نوع المحتوى غير مدعوم"
 
 
 def _create_deferred_2p_room(creator_uid: int, creator_name: str) -> str:
@@ -4255,6 +4259,7 @@ async def player_post_receive_text_from_options(message: types.Message, state: F
     await state.clear()
     chat_target = _normalize_channel_target()
     if not chat_target:
+        logger.warning("player_post_receive_text_from_options: no chat_target")
         return await message.answer("⚠️ نشر المنشورات غير متاح حالياً.")
     text = (message.text or "").strip()
     ok, reason = check_post_content(text)
@@ -4306,7 +4311,13 @@ async def player_post_receive_text_from_options(message: types.Message, state: F
                 except Exception:
                     pass
         except Exception as e:
-            await message.answer("❌ فشل النشر. تحقق من إعدادات القناة والصلاحيات.")
+            logger.exception("share_result: publish to channel failed: %s", e)
+            err = str(e).replace("'", "").strip()[:220]
+            await message.answer(
+                "❌ فشل النشر.\n\n"
+                "تحقق أن البوت مضاف في القناة كـ **مسؤول** وله صلاحية «نشر رسائل».\n\n"
+                f"الخطأ: {err}"
+            )
             return
         kb_after = []
         if PUBLISH_CHANNEL_USERNAME:
@@ -4327,7 +4338,8 @@ async def player_post_receive_text_from_options(message: types.Message, state: F
         sent_msg_id = sent.message_id if sent else None
     except Exception as e:
         logger.exception("player_post: send_message failed: %s", e)
-        await message.answer("❌ فشل النشر.")
+        err = str(e).replace("'", "").strip()[:220]
+        await message.answer(f"❌ فشل النشر.\n\nالخطأ: {err}")
         return
     if sent_msg_id is not None:
         try:
@@ -4379,9 +4391,9 @@ async def player_post_receive_media_from_options(message: types.Message, state: 
     name = _get_player_name_for_post(uid, message.from_user.full_name)
     join_code = _create_deferred_2p_room(uid, name) if add_play else None
     reply_kb = _channel_post_buttons(uid, add_profile, join_code)
-    ok, sent_msg_id = await _publish_media_to_channel(message.bot, message, name, reply_markup=reply_kb)
+    ok, sent_msg_id, err = await _publish_media_to_channel(message.bot, message, name, reply_markup=reply_kb)
     if not ok and reply_kb:
-        ok, sent_msg_id = await _publish_media_to_channel(message.bot, message, name, reply_markup=None)
+        ok, sent_msg_id, err = await _publish_media_to_channel(message.bot, message, name, reply_markup=None)
     if ok and sent_msg_id is not None:
         try:
             row = db_query(
@@ -4406,7 +4418,10 @@ async def player_post_receive_media_from_options(message: types.Message, state: 
         kb_after.append([InlineKeyboardButton(text="🔙 رجوع للقائمة الرئيسية", callback_data="home")])
         await message.answer("✅ تم نشر منشورك في القناة.", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_after))
     else:
-        await message.answer("❌ فشل النشر. تأكد أن البوت مضاف في القناة كـ مسؤول.")
+        msg = "❌ فشل النشر. تأكد أن البوت مضاف في القناة كـ مسؤول."
+        if err:
+            msg += f"\n\nالخطأ: {err}"
+        await message.answer(msg)
 
 
 @router.message(PlayerPostStates.waiting_message, F.text)
@@ -4444,7 +4459,7 @@ async def player_post_receive_text(message: types.Message, state: FSMContext):
         )
         return
     sent_msg_id = None
-    logger.info("player_post: sending text to channel chat_id=%s", chat_target)
+    logger.info("player_post: sending text to channel chat_id=%s (PUBLISH_CHANNEL_ID=%s)", chat_target, PUBLISH_CHANNEL_ID)
     try:
         sent = await message.bot.send_message(
             chat_id=chat_target,
@@ -4523,9 +4538,9 @@ async def player_post_receive_media(message: types.Message, state: FSMContext):
         except Exception:
             pass
     reply_kb = _channel_post_buttons(uid, add_profile, join_code)
-    ok, sent_msg_id = await _publish_media_to_channel(message.bot, message, name, reply_markup=reply_kb)
+    ok, sent_msg_id, err = await _publish_media_to_channel(message.bot, message, name, reply_markup=reply_kb)
     if not ok and reply_kb:
-        ok, sent_msg_id = await _publish_media_to_channel(message.bot, message, name, reply_markup=None)
+        ok, sent_msg_id, err = await _publish_media_to_channel(message.bot, message, name, reply_markup=None)
     if ok and sent_msg_id is not None:
         chat_target = chat_target_media
         try:
@@ -4554,9 +4569,10 @@ async def player_post_receive_media(message: types.Message, state: FSMContext):
             reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_after)
         )
     else:
-        await message.answer(
-            "❌ فشل النشر (الميديا). تأكد أن البوت مضاف في القناة كـ مسؤول وله صلاحية «نشر رسائل». راجع الـ logs للتفاصيل."
-        )
+        msg = "❌ فشل النشر (الميديا). تأكد أن البوت مضاف في القناة كـ مسؤول وله صلاحية «نشر رسائل»."
+        if err:
+            msg += f"\n\nالخطأ: {err}"
+        await message.answer(msg)
 
 
 @router.message(PlayerPostStates.waiting_message)
