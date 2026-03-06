@@ -115,8 +115,10 @@ if (PUBLISH_CHANNEL_ID is not None or PUBLISH_CHANNEL_USERNAME) and not (BOT_USE
 # سجل عند التشغيل لمعرفة إن كانت النشر مفعّلة (للتشخيص)
 if (PUBLISH_CHANNEL_ID is not None or PUBLISH_CHANNEL_USERNAME) and (BOT_USERNAME or "").strip():
     logger.info("📢 نشر النتائج/المنشورات: مفعّل (قناة=%s، بوت=@%s)", PUBLISH_CHANNEL_ID or PUBLISH_CHANNEL_USERNAME, (BOT_USERNAME or "").strip().lstrip("@"))
+    print("📢 نشر النتائج: مفعّل — زر «نشر فوزك» سيظهر للفائز")
 else:
     logger.warning("📢 نشر النتائج: معطّل — اضبط PUBLISH_CHANNEL_ID أو PUBLISH_CHANNEL_USERNAME و BOT_USERNAME (في channel_config.py أو متغيرات البيئة)")
+    print("⚠️ نشر النتائج: معطّل — اضبط القناة و BOT_USERNAME في channel_config.py أو متغيرات البيئة")
 
 async def is_channel_member(bot, user_id: int) -> bool:
     if not CHANNEL_ID:
@@ -3784,5 +3786,7 @@ try:
     from handlers.community_publish import router as _community_router
     router.include_router(_community_router)
     logger.info("📢 روتر المجتمع والنشر (community_publish) مُسجّل بنجاح.")
+    print("📢 نشر النتائج/المنشورات: مُسجّل (زر «نشر فوزك» و مجتمع الأونو)")
 except Exception as e:
     logger.exception("❌ فشل تحميل روتر المجتمع والنشر (نشر فوزك لن يعمل): %s", e)
+    print("❌ نشر النتائج: فشل تحميل الوحدة —", str(e)[:120])
