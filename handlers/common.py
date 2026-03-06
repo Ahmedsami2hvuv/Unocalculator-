@@ -522,7 +522,16 @@ def build_game_end_keyboard(replay_id: str, for_user_id: int) -> InlineKeyboardM
         ])
     winner_id = rdata.get("winner_id")
     if winner_id and for_user_id == winner_id and (PUBLISH_CHANNEL_ID or PUBLISH_CHANNEL_USERNAME) and BOT_USERNAME:
-        kb.append([InlineKeyboardButton(text="📢 نشر فوزك", callback_data=f"share_result_{replay_id}")])
+        share_btn_text = "📢 نشر فوزك"
+        try:
+            row = db_query("SELECT online_points FROM users WHERE user_id = %s", (winner_id,))
+            if row:
+                pts = int(row[0].get("online_points") or 0)
+                if pts >= 0:
+                    share_btn_text = f"📢 نشر فوزك ({pts} نقطة)"
+        except Exception:
+            pass
+        kb.append([InlineKeyboardButton(text=share_btn_text, callback_data=f"share_result_{replay_id}")])
     kb.append([InlineKeyboardButton(text="🔄 لعب مرة أخرى", callback_data=f"replay_{replay_id}")])
     kb.append([InlineKeyboardButton(text=t(for_user_id, "btn_home"), callback_data="home")])
     return InlineKeyboardMarkup(inline_keyboard=kb)
