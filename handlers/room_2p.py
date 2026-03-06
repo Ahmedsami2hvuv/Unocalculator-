@@ -480,7 +480,7 @@ async def background_auto_draw(room_id, bot, curr_idx):
     countdown_msg_id = None
     countdown_chat_id = None
     try:
-        cancel_auto_draw_task(room_id)
+        # لا نستدعي cancel_auto_draw_task هنا لأننا نحن المهمة الحالية — إلغاؤها يلغي السحب التلقائي
 
         players = get_ordered_players(room_id)
         if curr_idx >= len(players):
@@ -773,6 +773,7 @@ async def refresh_ui_2p(room_id, bot, alert_msg_dict=None):
         is_playable = any(check_validity(c, room['top_card'], room['current_color']) for c in curr_hand)
 
         if not is_playable:
+            cancel_auto_draw_task(room_id)
             if room_id not in auto_draw_tasks or auto_draw_tasks[room_id].done():
                 auto_draw_tasks[room_id] = asyncio.create_task(background_auto_draw(room_id, bot, curr_idx))
         else:
@@ -1025,11 +1026,17 @@ async def bot_play_turn(room_id, bot):
                     opp_hand.append(deck.pop(0))
             db_query("UPDATE room_players SET hand = %s, said_uno = FALSE WHERE user_id = %s", (json.dumps(opp_hand), opp_id), commit=True)
             db_query("UPDATE rooms SET deck = %s WHERE room_id = %s", (json.dumps(deck), room_id), commit=True)
+            catch_msg = None
             try:
-                await bot.send_message(opp_id, "🪤 **البوت صادك!** سحبت ورقتين لأنك نسيت تصيح اونو.\n⏳ اللعبة تكمل خلال 5 ثواني...", parse_mode="Markdown")
+                catch_msg = await bot.send_message(opp_id, "🪤 **البوت صادك!** سحبت ورقتين لأنك نسيت تصيح اونو.\n⏳ اللعبة تكمل خلال 5 ثواني...", parse_mode="Markdown")
             except Exception:
                 pass
             await asyncio.sleep(5)
+            if catch_msg:
+                try:
+                    await bot.delete_message(opp_id, catch_msg.message_id)
+                except Exception:
+                    pass
             await refresh_ui_2p(room_id, bot, {opp_id: "🪤 البوت صادك! سحبت ورقتين. دور البوت يلعب..."})
             room_data = db_query("SELECT * FROM rooms WHERE room_id = %s", (room_id,))
             if not room_data or room_data[0]['status'] != 'playing':
@@ -1043,11 +1050,17 @@ async def bot_play_turn(room_id, bot):
 
         valid = [c for c in bot_hand if check_validity(c, top_card, current_color)]
         if not valid:
+            no_card_msg = None
             try:
-                await bot.send_message(opp_id, "🤖 البوت ما عنده ورقة مناسبة. راح يسحب ورقة خلال 5 ثواني...", parse_mode="Markdown")
+                no_card_msg = await bot.send_message(opp_id, "🤖 البوت ما عنده ورقة مناسبة. راح يسحب ورقة خلال 5 ثواني...", parse_mode="Markdown")
             except Exception:
                 pass
             await asyncio.sleep(5)
+            if no_card_msg:
+                try:
+                    await bot.delete_message(opp_id, no_card_msg.message_id)
+                except Exception:
+                    pass
             if deck:
                 new_card = deck.pop(0)
                 bot_hand.append(new_card)
