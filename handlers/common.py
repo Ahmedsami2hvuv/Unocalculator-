@@ -41,15 +41,24 @@ BOT_INFO_CANDIDATES = [
 
 
 def _read_bot_info_message():
-    """يقرأ نص رسالة معلومات البوت من الملف BOT_INFO_MESSAGE.md إن وُجد."""
+    """يقرأ نص رسالة معلومات البوت من الملف BOT_INFO_MESSAGE.md عند كل طلب (بدون كاش)."""
     for path in BOT_INFO_CANDIDATES:
         try:
             if os.path.isfile(path):
+                stat = os.stat(path)
                 with open(path, "r", encoding="utf-8") as f:
                     out = f.read().strip()
                 if out:
-                    logger.info("BOT_INFO_MESSAGE: loaded from %s", path)
-                    return out
+                    # إزالة سطر النسخة من أول الملف إن وُجد (للمطور فقط، لا يظهر للمستخدم)
+                    out = re.sub(r"^\s*#\s*BOT_INFO_VERSION=.*\n?", "", out)
+                    out = re.sub(r"^\s*<!--\s*BOT_INFO_VERSION.*?-->\s*\n?", "", out, flags=re.IGNORECASE)
+                    out = out.strip()
+                    if out:
+                        logger.info(
+                            "BOT_INFO_MESSAGE: loaded from %s (size=%s bytes, mtime=%s)",
+                            path, stat.st_size, stat.st_mtime
+                        )
+                        return out
         except Exception as e:
             logger.debug("BOT_INFO_MESSAGE: could not read %s: %s", path, e)
     logger.warning("BOT_INFO_MESSAGE: file not found, using i18n fallback. Tried: %s", BOT_INFO_CANDIDATES)
