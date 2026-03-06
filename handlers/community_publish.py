@@ -12,7 +12,7 @@ from aiogram import Router, types, F
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.filters import BaseFilter
+from aiogram.filters import BaseFilter, Command
 
 from database import db_query
 
@@ -25,10 +25,37 @@ from handlers.common import (
     PUBLISH_CHANNEL_USERNAME,
     BOT_USERNAME,
     _channel_post_buttons,
+    process_start_deeplink,
 )
 
 logger = logging.getLogger(__name__)
 router = Router(name="community_publish")
+
+
+class _FilterStartWithPayload(BaseFilter):
+    """يمرّر فقط عندما النص هو /start متبوعاً بمعامل (profile_، like_، join_، add_)."""
+    async def __call__(self, *args, **kwargs) -> bool:
+        event = args[0] if args else kwargs.get("event")
+        if not event or not getattr(event, "text", None):
+            return False
+        text = (event.text or "").strip()
+        if not text.startswith("/start") or len(text) <= 7:
+            return False
+        rest = text[6:].strip()
+        if not rest:
+            return False
+        first = rest.split(maxsplit=1)[0] if rest.split() else rest
+        return first.startswith("profile_") or first.startswith("add_") or first.startswith("like_") or first.startswith("join_")
+
+
+@router.message(Command("start"), _FilterStartWithPayload())
+async def start_deeplink_from_channel(message: types.Message, state: FSMContext):
+    """أول معالج لـ /start عند فتح الرابط من أزرار القناة — نستخرج الـ payload من النص مباشرة."""
+    text = (message.text or "").strip()
+    rest = text[6:].strip()
+    payload = rest.split(maxsplit=1)[0] if rest.split() else rest
+    logger.info("start_deeplink_from_channel: payload=%s uid=%s", payload[:80], message.from_user.id)
+    await process_start_deeplink(message, payload, state)
 
 
 def _html_esc(text):
