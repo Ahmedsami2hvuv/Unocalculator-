@@ -1611,10 +1611,55 @@ async def random_search_confirm(c: types.CallbackQuery):
         db_query("INSERT INTO room_players (room_id, user_id, player_name, is_ready) VALUES (%s, %s, %s, TRUE)",
                  (code, uid, u_name), commit=True)
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🏠 القائمة الرئيسية", callback_data="home")]
+            [InlineKeyboardButton(text=t(uid, "no_players_offer_bot_btn"), callback_data=f"play_vs_bot_{code}")],
+            [InlineKeyboardButton(text=t(uid, "btn_home"), callback_data="home")]
         ])
-        await c.message.edit_text("⏳ جاري البحث عن خصم... يرجى الانتظار", reply_markup=kb)
-    
+        await c.message.edit_text(t(uid, "no_players_offer_bot"), reply_markup=kb)
+
+
+@router.callback_query(F.data.startswith("play_vs_bot"))
+async def play_vs_bot(c: types.CallbackQuery):
+    uid = c.from_user.id
+    user = db_query("SELECT * FROM users WHERE user_id = %s", (uid,))
+    if not user:
+        await c.answer(t(uid, "room_not_found"), show_alert=True)
+        return
+    data = c.data
+    if data == "play_vs_bot":
+        room_to_leave = None
+    else:
+        # play_vs_bot_<room_id> — مغادرة غرفة الانتظار أولاً
+        room_to_leave = data.replace("play_vs_bot_", "", 1).strip()
+        if room_to_leave:
+            db_query("DELETE FROM room_players WHERE room_id = %s AND user_id = %s", (room_to_leave, uid), commit=True)
+            left = db_query("SELECT COUNT(*) AS c FROM room_players WHERE room_id = %s", (room_to_leave,))
+            if left and left[0].get("c", 0) == 0:
+                db_query("DELETE FROM rooms WHERE room_id = %s", (room_to_leave,), commit=True)
+    u_name = user[0]["player_name"]
+    code = generate_room_code()
+    db_query(
+        "INSERT INTO rooms (room_id, creator_id, max_players, score_limit, status, is_random) VALUES (%s, %s, 2, 0, 'playing', FALSE)",
+        (code, uid), commit=True
+    )
+    db_query(
+        "INSERT INTO room_players (room_id, user_id, player_name, is_ready) VALUES (%s, %s, %s, TRUE)",
+        (code, uid, u_name), commit=True
+    )
+    BOT_USER_ID = -1
+    db_query(
+        "INSERT INTO room_players (room_id, user_id, player_name, is_ready) VALUES (%s, %s, %s, FALSE)",
+        (code, BOT_USER_ID, "البوت"), commit=True
+    )
+    await c.answer()
+    try:
+        await c.message.edit_text("🎮 بدأت اللعبة ضد البوت! استعد...")
+    except Exception:
+        pass
+    from handlers.room_2p import start_new_round
+    # في وضع البوت: الترتيب [البوت, الإنسان] فـ turn_index=1 = دور الإنسان
+    await start_new_round(code, c.bot, start_turn_idx=1)
+
+
 @router.callback_query(F.data == "room_create_start")
 async def room_create_menu(c: types.CallbackQuery):
     kb, row = [], []
@@ -2256,7 +2301,8 @@ async def show_main_menu(message, name, user_id, cleanup=False, state=None, from
         return
     # 4. بناء الكيبورد
     kb = [
-        [InlineKeyboardButton(text=t(uid, "btn_random_play"), callback_data="random_play")],
+        [InlineKeyboardButton(text=t(uid, "btn_random_play"), callback_data="random_play"),
+         InlineKeyboardButton(text=t(uid, "btn_play_vs_bot"), callback_data="play_vs_bot")],
         [InlineKeyboardButton(text=t(uid, "btn_play_friends"), callback_data="play_friends")],
         [InlineKeyboardButton(text="👥 مجتمع الأونو", callback_data="community_uno_menu")],
         [InlineKeyboardButton(text=t(uid, "btn_friends"), callback_data="social_menu")],
