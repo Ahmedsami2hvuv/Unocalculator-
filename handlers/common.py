@@ -433,8 +433,8 @@ def build_game_end_keyboard(replay_id: str, for_user_id: int) -> InlineKeyboardM
             InlineKeyboardButton(text=btn_text, callback_data=cb)
         ])
     winner_id = rdata.get("winner_id")
-    if winner_id and for_user_id == winner_id and PUBLISH_CHANNEL_ID and BOT_USERNAME:
-        kb.append([InlineKeyboardButton(text="📢 نشر النتيجة", callback_data=f"share_result_{replay_id}")])
+    if winner_id and for_user_id == winner_id and (PUBLISH_CHANNEL_ID or PUBLISH_CHANNEL_USERNAME) and BOT_USERNAME:
+        kb.append([InlineKeyboardButton(text="📢 نشر فوزك", callback_data=f"share_result_{replay_id}")])
     kb.append([InlineKeyboardButton(text="🔄 لعب مرة أخرى", callback_data=f"replay_{replay_id}")])
     kb.append([InlineKeyboardButton(text=t(for_user_id, "btn_home"), callback_data="home")])
     return InlineKeyboardMarkup(inline_keyboard=kb)
@@ -2427,8 +2427,8 @@ async def gameend_back_to_list(c: types.CallbackQuery):
 
 
 @router.callback_query(F.data.startswith("share_result_"))
-async def share_result_to_channel(c: types.CallbackQuery):
-    """نشر نتيجة الفوز في قناة النشر (قناة واحدة) مع زر إضافة اللاعب."""
+async def share_result_to_channel(c: types.CallbackQuery, state: FSMContext):
+    """نشر فوزك: عرض خيارات (حسابي، العب معي) ثم انتظار رسالة اللاعب ثم النشر في القناة بالنتيجة + النص + الأزرار."""
     chat_target = _normalize_channel_target()
     if not chat_target or not BOT_USERNAME:
         return await c.answer("⚠️ نشر النتائج غير متاح حالياً. سيتم تفعيله من الإدارة لاحقاً.", show_alert=True)
@@ -2439,23 +2439,21 @@ async def share_result_to_channel(c: types.CallbackQuery):
     winner_id = rdata.get("winner_id")
     if not winner_id or winner_id != c.from_user.id:
         return await c.answer("⚠️ غير مصرح.", show_alert=True)
-    summary = rdata.get("summary", "🏁 انتهت الجولة!")
-    w_name = next((pname for pid, pname in (rdata.get("players") or []) if pid == winner_id), "لاعب")
-    add_url = f"https://t.me/{BOT_USERNAME.lstrip('@')}?start=add_{winner_id}"
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="➕ اللاعب", url=add_url)]
-    ])
-    try:
-        await c.bot.send_message(
-            chat_id=chat_target,
-            text=f"{summary}\n\n👤 الفائز: {w_name}",
-            reply_markup=kb,
-            parse_mode="Markdown"
-        )
-        await c.answer("✅ تم نشر النتيجة في القناة.", show_alert=True)
-    except Exception as e:
-        print(f"[share_result] {e}")
-        await c.answer("❌ فشل النشر. تحقق من إعدادات القناة والصلاحيات.", show_alert=True)
+    await state.set_state(PlayerPostStates.waiting_options)
+    await state.update_data(
+        share_replay_id=replay_id,
+        post_add_profile=True,
+        post_add_play=False
+    )
+    await c.message.edit_text(
+        "📢 **نشر فوزك**\n\nاختر ما تريد إضافته تحت المنشور، ثم أرسل رسالتك مباشرة (مثلاً: هل من متحدي؟).\n\n"
+        "• **زر حسابي:** يظهر زر يفتح بروفايلك.\n"
+        "• **العب معي:** يظهر زر ينضم من يضغطه معك في كيم ثنائي.\n\n"
+        "⚠️ لا يُسمح بنشر أرقام هواتف أو كلمات تخالف المعايير.",
+        reply_markup=_post_options_kb({"post_add_profile": True, "post_add_play": False}),
+        parse_mode="Markdown"
+    )
+    await c.answer()
 
 
 # طلب الصداقة أُزيل: نستخدم المتابعة الفورية فقط. الضغط على إضافة/متابعة يبلغ المستخدم ولا يخفي قائمة اللاعبين.
@@ -3670,13 +3668,13 @@ async def reject_game_invite(c: types.CallbackQuery):
 
 
 def _post_options_kb(data: dict) -> InlineKeyboardMarkup:
-    """أزرار خيارات المنشور: حسابي، العب معي، تم."""
+    """أزرار خيارات المنشور: حسابي، العب معي، تراجع."""
     add_p = data.get("post_add_profile", True)
     add_play = data.get("post_add_play", False)
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"👤 زر حسابي {'✓' if add_p else ''}", callback_data="post_toggle_profile")],
         [InlineKeyboardButton(text=f"🎮 العب معي {'✓' if add_play else ''}", callback_data="post_toggle_play")],
-        [InlineKeyboardButton(text="✅ تم، أرسل رسالتك الآن", callback_data="post_ready_send")],
+        [InlineKeyboardButton(text="🔙 تراجع", callback_data="post_back")],
     ])
 
 
@@ -3688,7 +3686,7 @@ async def player_post_start(c: types.CallbackQuery, state: FSMContext):
     await state.set_state(PlayerPostStates.waiting_options)
     await state.update_data(post_add_profile=True, post_add_play=False)
     await c.message.edit_text(
-        "📢 **نشر منشور**\n\nاختر ما تريد إضافته تحت منشورك في القناة، ثم اضغط «تم، أرسل رسالتك الآن» وأرسل النص أو الصورة أو أي ميديا.\n\n"
+        "📢 **نشر منشور**\n\nاختر ما تريد إضافته تحت منشورك، ثم أرسل النص أو الصورة أو أي ميديا مباشرة (بدون نقر «تم»).\n\n"
         "• **زر حسابي:** يظهر زر يفتح بروفايلك (متابعة، طلب لعب، رجوع للقناة).\n"
         "• **العب معي:** يظهر زر من يضغطه ينضم معك في كيم ثنائي فوراً.\n\n"
         "⚠️ لا يُسمح بنشر أرقام هواتف أو كلمات تخالف المعايير.",
@@ -3722,6 +3720,7 @@ async def post_toggle_play(c: types.CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data == "post_ready_send")
 async def post_ready_send(c: types.CallbackQuery, state: FSMContext):
+    """الانتقال لانتظار الرسالة (للتوافق مع من يضغط تم). يمكن أيضاً إرسال المحتوى مباشرة من شاشة الخيارات."""
     if await state.get_state() != PlayerPostStates.waiting_options.state:
         return await c.answer()
     data = await state.get_data()
@@ -3746,6 +3745,28 @@ async def post_ready_send(c: types.CallbackQuery, state: FSMContext):
     await state.set_state(PlayerPostStates.waiting_message)
     await c.message.edit_text(
         "📢 أرسل الآن النص أو الصور أو الصوت أو الفيديو أو الملصقات أو أي ميديا للنشر في القناة.\n\n⚠️ لا يُسمح بنشر أرقام هواتف أو كلمات تخالف المعايير."
+    )
+    await c.answer()
+
+
+@router.callback_query(F.data == "post_back")
+async def post_back(c: types.CallbackQuery, state: FSMContext):
+    """تراجع: العودة لقائمة مجتمع الأونو وإلغاء النشر."""
+    await state.clear()
+    rows = [
+        [InlineKeyboardButton(text="📢 نشر منشور بالقناة", callback_data="player_post_start")],
+    ]
+    if PUBLISH_CHANNEL_USERNAME:
+        ch = PUBLISH_CHANNEL_USERNAME.lstrip("@")
+        rows.append([InlineKeyboardButton(text="📜 عرض القناة", url=f"https://t.me/{ch}")])
+    else:
+        rows.append([InlineKeyboardButton(text="📜 عرض القناة", callback_data="player_posts_channel")])
+    rows.append([InlineKeyboardButton(text="📋 منشوراتي", callback_data="my_posts_list")])
+    rows.append([InlineKeyboardButton(text="🔙 رجوع", callback_data="home")])
+    await c.message.edit_text(
+        "👥 **مجتمع الأونو**\n\nاختر:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+        parse_mode="Markdown"
     )
     await c.answer()
 
@@ -3927,6 +3948,161 @@ def _channel_post_buttons(publisher_uid: int, add_profile: bool, join_code: str 
     if not rows:
         return None
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@router.message(PlayerPostStates.waiting_options, F.text)
+async def player_post_receive_text_from_options(message: types.Message, state: FSMContext):
+    """إرسال مباشر من شاشة الخيارات: نشر عادي أو نشر فوز حسب وجود share_replay_id."""
+    uid = message.from_user.id
+    data = await state.get_data()
+    share_replay_id = data.get("share_replay_id")
+    add_profile = data.get("post_add_profile", True)
+    add_play = data.get("post_add_play", False)
+    await state.clear()
+    chat_target = _normalize_channel_target()
+    if not chat_target:
+        return await message.answer("⚠️ نشر المنشورات غير متاح حالياً.")
+    text = (message.text or "").strip()
+    ok, reason = check_post_content(text)
+    if not ok:
+        return await message.answer(f"⛔ {reason}")
+    if share_replay_id:
+        rdata = replay_data.get(share_replay_id)
+        if not rdata:
+            return await message.answer("⚠️ انتهت صلاحية النشر.")
+        summary = rdata.get("summary", "🏁 انتهت الجولة!")
+        winner_id = rdata.get("winner_id")
+        w_name = next((pname for pid, pname in (rdata.get("players") or []) if pid == winner_id), "لاعب")
+        text_to_send = f"{summary}\n\n💬 **{w_name}:** {text}"
+        join_code = None
+        if add_play:
+            try:
+                join_code = _create_deferred_2p_room(winner_id, w_name)
+            except Exception:
+                pass
+        reply_kb = _channel_post_buttons(winner_id, add_profile, join_code)
+        try:
+            sent = await message.bot.send_message(
+                chat_id=chat_target, text=text_to_send, parse_mode="Markdown", reply_markup=reply_kb
+            )
+            if sent and sent.message_id and reply_kb:
+                try:
+                    row = db_query(
+                        "INSERT INTO channel_posts (channel_id, message_id, publisher_uid, add_profile, join_code) VALUES (%s, %s, %s, %s, %s) RETURNING id",
+                        (str(chat_target), sent.message_id, winner_id, bool(add_profile), join_code),
+                        commit=True
+                    )
+                    if row:
+                        post_id = row[0].get("id")
+                        new_kb = _channel_post_buttons(winner_id, add_profile, join_code, post_id=post_id, likes_count=0)
+                        if new_kb:
+                            await message.bot.edit_message_reply_markup(
+                                chat_id=chat_target, message_id=sent.message_id, reply_markup=new_kb
+                            )
+                except Exception:
+                    pass
+        except Exception as e:
+            await message.answer("❌ فشل النشر. تحقق من إعدادات القناة والصلاحيات.")
+            return
+        kb_after = []
+        if PUBLISH_CHANNEL_USERNAME:
+            ch_user = PUBLISH_CHANNEL_USERNAME.lstrip("@")
+            kb_after.append([InlineKeyboardButton(text="📢 الذهاب للقناة", url=f"https://t.me/{ch_user}")])
+        kb_after.append([InlineKeyboardButton(text="🔙 رجوع للقائمة الرئيسية", callback_data="home")])
+        await message.answer("✅ تم نشر منشورك.", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_after))
+        return
+    # نشر عادي من خيارات
+    name = _get_player_name_for_post(uid, message.from_user.full_name)
+    text_to_send = f"👤 **{name}**\n\n{text}"
+    join_code = _create_deferred_2p_room(uid, name) if add_play else None
+    reply_kb = _channel_post_buttons(uid, add_profile, join_code)
+    try:
+        sent = await message.bot.send_message(
+            chat_id=chat_target, text=text_to_send, parse_mode="Markdown", reply_markup=reply_kb
+        )
+        sent_msg_id = sent.message_id if sent else None
+    except Exception as e:
+        logger.exception("player_post: send_message failed: %s", e)
+        await message.answer("❌ فشل النشر.")
+        return
+    if sent_msg_id is not None:
+        try:
+            row = db_query(
+                "INSERT INTO channel_posts (channel_id, message_id, publisher_uid, add_profile, join_code) VALUES (%s, %s, %s, %s, %s) RETURNING id",
+                (str(chat_target), sent_msg_id, uid, bool(add_profile), join_code),
+                commit=True
+            )
+            if row:
+                post_id = row[0].get("id")
+                new_kb = _channel_post_buttons(uid, add_profile, join_code, post_id=post_id, likes_count=0)
+                if new_kb:
+                    await message.bot.edit_message_reply_markup(
+                        chat_id=chat_target, message_id=sent_msg_id, reply_markup=new_kb
+                    )
+        except Exception:
+            pass
+    kb_after = []
+    if PUBLISH_CHANNEL_USERNAME:
+        ch_user = PUBLISH_CHANNEL_USERNAME.lstrip("@")
+        kb_after.append([InlineKeyboardButton(text="📢 الذهاب للقناة", url=f"https://t.me/{ch_user}")])
+    kb_after.append([InlineKeyboardButton(text="🔙 رجوع للقائمة الرئيسية", callback_data="home")])
+    await message.answer("✅ تم نشر منشورك في القناة.", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_after))
+
+
+@router.message(PlayerPostStates.waiting_options, F.photo | F.voice | F.video | F.animation | F.sticker | F.document | F.audio | F.video_note)
+async def player_post_receive_media_from_options(message: types.Message, state: FSMContext):
+    """إرسال ميديا مباشرة من شاشة الخيارات (نشر عادي فقط؛ نشر فوز يدعم نصاً فقط)."""
+    uid = message.from_user.id
+    data = await state.get_data()
+    share_replay_id = data.get("share_replay_id")
+    if share_replay_id:
+        await state.clear()
+        return await message.answer(
+            "📢 نشر فوزك يدعم **نصاً فقط**. أرسل رسالتك نصاً (مثلاً: هل من متحدي؟).",
+            parse_mode="Markdown"
+        )
+    add_profile = data.get("post_add_profile", True)
+    add_play = data.get("post_add_play", False)
+    await state.clear()
+    chat_target = _normalize_channel_target()
+    if not chat_target:
+        return await message.answer("⚠️ نشر المنشورات غير متاح حالياً.")
+    caption_text = (message.caption or "").strip()
+    if caption_text:
+        ok, reason = check_post_content(caption_text)
+        if not ok:
+            return await message.answer(f"⛔ {reason}")
+    name = _get_player_name_for_post(uid, message.from_user.full_name)
+    join_code = _create_deferred_2p_room(uid, name) if add_play else None
+    reply_kb = _channel_post_buttons(uid, add_profile, join_code)
+    ok, sent_msg_id = await _publish_media_to_channel(message.bot, message, name, reply_markup=reply_kb)
+    if not ok and reply_kb:
+        ok, sent_msg_id = await _publish_media_to_channel(message.bot, message, name, reply_markup=None)
+    if ok and sent_msg_id is not None:
+        try:
+            row = db_query(
+                "INSERT INTO channel_posts (channel_id, message_id, publisher_uid, add_profile, join_code) VALUES (%s, %s, %s, %s, %s) RETURNING id",
+                (str(chat_target), sent_msg_id, uid, bool(add_profile), join_code),
+                commit=True
+            )
+            if row:
+                post_id = row[0].get("id")
+                new_kb = _channel_post_buttons(uid, add_profile, join_code, post_id=post_id, likes_count=0)
+                if new_kb:
+                    await message.bot.edit_message_reply_markup(
+                        chat_id=chat_target, message_id=sent_msg_id, reply_markup=new_kb
+                    )
+        except Exception:
+            pass
+    if ok:
+        kb_after = []
+        if PUBLISH_CHANNEL_USERNAME:
+            ch_user = PUBLISH_CHANNEL_USERNAME.lstrip("@")
+            kb_after.append([InlineKeyboardButton(text="📢 الذهاب للقناة", url=f"https://t.me/{ch_user}")])
+        kb_after.append([InlineKeyboardButton(text="🔙 رجوع للقائمة الرئيسية", callback_data="home")])
+        await message.answer("✅ تم نشر منشورك في القناة.", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_after))
+    else:
+        await message.answer("❌ فشل النشر. تأكد أن البوت مضاف في القناة كـ مسؤول.")
 
 
 @router.message(PlayerPostStates.waiting_message, F.text)
