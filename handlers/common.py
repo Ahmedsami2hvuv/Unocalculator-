@@ -4,7 +4,7 @@ import sys
 import importlib.util
 import logging
 from aiogram import Router, types, F
-from aiogram.filters import Command, BaseFilter
+from aiogram.filters import Command, CommandObject, BaseFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
@@ -803,16 +803,21 @@ def _normalize_join_code(payload: str) -> str:
 
 
 @router.message(Command("start"))
-async def cmd_start_with_deeplink(message: types.Message, state: FSMContext):
-    """معالجة /start مع رابط الدعوة: join_، profile_، add_"""
-    text = (message.text or "").strip()
-    # استخراج الـ payload: كل ما بعد "/start" ليعمل من روابط القناة (أزرار حساب اللاعب، العب معي، لايك)
+async def cmd_start_with_deeplink(message: types.Message, state: FSMContext, command: CommandObject = None):
+    """معالجة /start مع رابط الدعوة: join_، profile_، add_ (أزرار القناة: حساب اللاعب، العب معي، لايك)"""
+    # استخراج الـ payload من command.args (الطريقة الصحيحة عند فتح الرابط من القناة) أو من النص
     payload = ""
-    if text.startswith("/start") and len(text) > 6:
-        payload = unquote(text[6:].strip())
+    if command and getattr(command, "args", None):
+        payload = (command.args or "").strip()
+    if not payload and message.text:
+        text = (message.text or "").strip()
+        if text.startswith("/start"):
+            rest = text[6:].strip()
+            if rest:
+                payload = unquote(rest.split(maxsplit=1)[0] if rest.split() else rest)
     if payload:
-        logger.info("cmd_start: payload=%s uid=%s", payload[:50], message.from_user.id)
-    parts = ["/start", payload] if payload else [text]
+        logger.info("cmd_start: payload=%s uid=%s", payload[:80], message.from_user.id)
+    parts = ["/start", payload] if payload else [message.text or "/start"]
     # روابط من القناة: حساب اللاعب (بروفايل)، أو لايك، أو العب معي
     if len(parts) >= 2 and payload:
         if payload.startswith("like_"):
