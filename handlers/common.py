@@ -366,11 +366,42 @@ def prepare_replay_after_game(room_id: str, creator_id: int, max_players: int, s
     return replay_id, msg, kb
 
 
+def _get_replay_from_db(replay_id: str):
+    """جلب جلسة replay من قاعدة البيانات (لنشر الفوز يعمل حتى من worker آخر)."""
+    try:
+        row = db_query(
+            "SELECT summary, winner_id, players_json FROM replay_sessions WHERE replay_id = %s",
+            (replay_id,)
+        )
+        if not row:
+            return None
+        r = row[0]
+        players = []
+        if r.get("players_json"):
+            try:
+                raw = json.loads(r["players_json"])
+                for x in raw:
+                    if isinstance(x, (list, tuple)) and len(x) >= 2:
+                        players.append((int(x[0]), str(x[1]) or "لاعب"))
+                    elif isinstance(x, dict):
+                        players.append((int(x.get("user_id") or 0), str(x.get("player_name") or "لاعب")))
+            except Exception:
+                pass
+        return {
+            "summary": r.get("summary") or "🏁 انتهت الجولة!",
+            "winner_id": r.get("winner_id"),
+            "players": players,
+        }
+    except Exception:
+        return None
+
+
 def create_replay_session(players: list, room: dict, mode: str, summary_text: str, winner_id: int = None) -> str:
     """ينشئ جلسة replay واحدة لكل اللاعبين ويخزن الملخص. winner_id: للاعب الفائز (يُظهر له زر نشر النتيجة)."""
     replay_id = str(uuid.uuid4())[:8]
+    players_list = [(p["user_id"], p.get("player_name") or "لاعب") for p in players]
     replay_data[replay_id] = {
-        "players": [(p["user_id"], p.get("player_name") or "لاعب") for p in players],
+        "players": players_list,
         "max_players": room.get("max_players", 2),
         "score_limit": room.get("score_limit", 0),
         "mode": mode,
@@ -378,6 +409,14 @@ def create_replay_session(players: list, room: dict, mode: str, summary_text: st
         "summary": summary_text,
         "winner_id": winner_id,
     }
+    try:
+        db_query(
+            "INSERT INTO replay_sessions (replay_id, summary, winner_id, players_json) VALUES (%s, %s, %s, %s)",
+            (replay_id, summary_text, winner_id, json.dumps(players_list)),
+            commit=True
+        )
+    except Exception:
+        pass
     return replay_id
 
 
@@ -2515,7 +2554,9 @@ async def share_result_to_channel(c: types.CallbackQuery, state: FSMContext):
     replay_id = c.data.replace("share_result_", "").strip()
     rdata = replay_data.get(replay_id)
     if not rdata:
-        return await c.answer("⚠️ انتهت صلاحية النشر.", show_alert=True)
+        rdata = _get_replay_from_db(replay_id)
+    if not rdata:
+        return await c.answer("⚠️ انتهت صلاحية النشر. جرّب النشر مباشرة بعد انتهاء الجولة.", show_alert=True)
     winner_id = rdata.get("winner_id")
     if not winner_id or winner_id != c.from_user.id:
         return await c.answer("⚠️ غير مصرح.", show_alert=True)
@@ -4071,11 +4112,21 @@ async def player_post_receive_text_from_options(message: types.Message, state: F
     if share_replay_id:
         rdata = replay_data.get(share_replay_id)
         if not rdata:
-            return await message.answer("⚠️ انتهت صلاحية النشر.")
+            rdata = _get_replay_from_db(share_replay_id)
+        if not rdata:
+            return await message.answer("⚠️ انتهت صلاحية النشر. جرّب النشر مباشرة بعد انتهاء الجولة.")
         summary = rdata.get("summary", "🏁 انتهت الجولة!")
         winner_id = rdata.get("winner_id")
         w_name = next((pname for pid, pname in (rdata.get("players") or []) if pid == winner_id), "لاعب")
-        text_to_send = f"{summary}\n\n💬 **{w_name}:** {text}"
+        total_pts = 0
+        try:
+            pr = db_query("SELECT online_points FROM users WHERE user_id = %s", (winner_id,))
+            if pr:
+                total_pts = int(pr[0].get("online_points") or 0)
+        except Exception:
+            pass
+        points_line = f"\n⭐ **مجموع نقاطه:** {total_pts}" if winner_id else ""
+        text_to_send = f"{summary}{points_line}\n\n💬 **{w_name}:** {text}"
         join_code = None
         if add_play:
             try:
