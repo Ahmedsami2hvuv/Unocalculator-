@@ -1161,15 +1161,20 @@ async def handle_play(c: types.CallbackQuery, state: FSMContext):
 async def handle_color(c: types.CallbackQuery, state: FSMContext):
     try:
         parts = c.data.split("_")
+        # الصيغة: cl_ROOMID_COLOR — اللون دائماً آخر جزء (إيموجي)
         if len(parts) >= 3:
-            room_id = parts[1]
-            chosen_color = parts[2]
-        else:
+            chosen_color = parts[-1]
+            room_id = "_".join(parts[1:-1])
+        elif len(parts) >= 2:
             data = await state.get_data()
             room_id = data.get('room_id')
-            chosen_color = parts[1] if len(parts) >= 2 else ""
+            chosen_color = parts[1]
+        else:
+            room_id = None
+            chosen_color = ""
         if not room_id or not chosen_color:
             return await c.answer("⚠️ انتهت صلاحية الاختيار. العب ورقة أخرى إن أمكن.", show_alert=True)
+        await c.answer()
         card = (await state.get_data()).get('card_played') if room_id else None
         p_idx = (await state.get_data()).get('p_idx')
         if card is None or p_idx is None:
@@ -1266,6 +1271,10 @@ async def handle_color(c: types.CallbackQuery, state: FSMContext):
 
     except Exception as e:
         print(f"Color Error: {e}")
+        try:
+            await c.answer("⚠️ حدث خطأ في اختيار اللون.", show_alert=True)
+        except Exception:
+            pass
 
 
 @router.callback_query(F.data.startswith("challenge_"))
@@ -1571,3 +1580,4 @@ async def handle_challenge(c: types.CallbackQuery):
     except Exception as e:
         print(f"Challenge Error (rs_): {e}")
         await c.answer("⚠️ حدث خطأ أثناء معالجة التحدي", show_alert=True)
+
