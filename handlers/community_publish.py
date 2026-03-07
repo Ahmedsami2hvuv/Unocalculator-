@@ -321,13 +321,9 @@ async def player_post_receive_text_pending(message: types.Message, state: FSMCon
             join_code = _create_deferred_2p_room(uid, name)
         except Exception as e:
             logger.warning("player_post: create_room: %s", e)
-    reply_kb = _channel_post_buttons(uid, add_profile, join_code)
-    if (add_profile or join_code) and not reply_kb:
-        await message.answer("⚠️ تم ضبط الخيارات لكن **BOT_USERNAME** غير مضبوط. اضبطه ثم أعد المحاولة.")
-        return
     sent_msg_id = None
     logger.info("player_post: sending text to channel chat_id=%s (pending)", chat_target)
-    sent_msg_id, err = await _send_to_channel_safe(message.bot, chat_target, text_to_send, reply_markup=reply_kb)
+    sent_msg_id, err = await _send_to_channel_safe(message.bot, chat_target, text_to_send, reply_markup=None)
     if err:
         await message.answer(
             "❌ فشل النشر.\n\n"
@@ -346,7 +342,12 @@ async def player_post_receive_text_pending(message: types.Message, state: FSMCon
                 post_id = row[0].get("id")
                 new_kb = _channel_post_buttons(uid, add_profile, join_code, post_id=post_id, likes_count=0)
                 if new_kb:
-                    await message.bot.edit_message_reply_markup(chat_id=chat_target, message_id=sent_msg_id, reply_markup=new_kb)
+                    try:
+                        await message.bot.edit_message_reply_markup(chat_id=chat_target, message_id=sent_msg_id, reply_markup=new_kb)
+                    except Exception as e:
+                        logger.warning("edit_message_reply_markup (like+buttons) failed: %s", e)
+                else:
+                    logger.warning("BOT_USERNAME not set: أزرار المنشور (لايك) لن تظهر.")
         except Exception as e:
             logger.exception("player_post: save_post: %s", e)
             if "channel_posts" in str(e).lower() or "relation" in str(e).lower():
@@ -389,10 +390,7 @@ async def player_post_receive_media_pending(message: types.Message, state: FSMCo
             join_code = _create_deferred_2p_room(uid, name)
         except Exception:
             pass
-    reply_kb = _channel_post_buttons(uid, add_profile, join_code)
-    ok, sent_msg_id, err = await _publish_media_to_channel(message.bot, message, name, reply_markup=reply_kb)
-    if not ok and reply_kb:
-        ok, sent_msg_id, err = await _publish_media_to_channel(message.bot, message, name, reply_markup=None)
+    ok, sent_msg_id, err = await _publish_media_to_channel(message.bot, message, name, reply_markup=None)
     if ok and sent_msg_id is not None:
         try:
             row = db_query(
@@ -403,7 +401,10 @@ async def player_post_receive_media_pending(message: types.Message, state: FSMCo
                 post_id = row[0].get("id")
                 new_kb = _channel_post_buttons(uid, add_profile, join_code, post_id=post_id, likes_count=0)
                 if new_kb:
-                    await message.bot.edit_message_reply_markup(chat_id=chat_target, message_id=sent_msg_id, reply_markup=new_kb)
+                    try:
+                        await message.bot.edit_message_reply_markup(chat_id=chat_target, message_id=sent_msg_id, reply_markup=new_kb)
+                    except Exception as e:
+                        logger.warning("edit_message_reply_markup (ميديا pending) failed: %s", e)
         except Exception as e:
             logger.exception("player_post: save_post media: %s", e)
     if ok:
@@ -877,8 +878,7 @@ async def player_post_receive_text_from_options(message: types.Message, state: F
                 join_code = _create_deferred_2p_room(winner_id, w_name)
             except Exception:
                 pass
-        reply_kb = _channel_post_buttons(winner_id, add_profile, join_code)
-        sent_mid, send_err = await _send_to_channel_safe(message.bot, chat_target, text_to_send, reply_markup=reply_kb)
+        sent_mid, send_err = await _send_to_channel_safe(message.bot, chat_target, text_to_send, reply_markup=None)
         if send_err or not sent_mid:
             logger.warning("share_result: publish to channel failed: %s", send_err)
             err = (send_err or "فشل الإرسال")[:220]
@@ -890,16 +890,18 @@ async def player_post_receive_text_from_options(message: types.Message, state: F
             )
             return
         try:
-            if reply_kb:
-                row = db_query(
-                    "INSERT INTO channel_posts (channel_id, message_id, publisher_uid, add_profile, join_code) VALUES (%s, %s, %s, %s, %s) RETURNING id",
-                    (str(chat_target), sent_mid, winner_id, bool(add_profile), join_code), commit=True
-                )
-                if row:
-                    post_id = row[0].get("id")
-                    new_kb = _channel_post_buttons(winner_id, add_profile, join_code, post_id=post_id, likes_count=0)
-                    if new_kb:
+            row = db_query(
+                "INSERT INTO channel_posts (channel_id, message_id, publisher_uid, add_profile, join_code) VALUES (%s, %s, %s, %s, %s) RETURNING id",
+                (str(chat_target), sent_mid, winner_id, bool(add_profile), join_code), commit=True
+            )
+            if row:
+                post_id = row[0].get("id")
+                new_kb = _channel_post_buttons(winner_id, add_profile, join_code, post_id=post_id, likes_count=0)
+                if new_kb:
+                    try:
                         await message.bot.edit_message_reply_markup(chat_id=chat_target, message_id=sent_mid, reply_markup=new_kb)
+                    except Exception as e:
+                        logger.warning("edit_message_reply_markup (نشر فوزي) failed: %s", e)
         except Exception:
             pass
         kb_after = []
@@ -913,8 +915,7 @@ async def player_post_receive_text_from_options(message: types.Message, state: F
     name = _get_player_name_for_post(uid, message.from_user.full_name)
     text_to_send = _post_text_html(name, text)
     join_code = _create_deferred_2p_room(uid, name) if add_play else None
-    reply_kb = _channel_post_buttons(uid, add_profile, join_code)
-    sent_msg_id, send_err = await _send_to_channel_safe(message.bot, chat_target, text_to_send, reply_markup=reply_kb)
+    sent_msg_id, send_err = await _send_to_channel_safe(message.bot, chat_target, text_to_send, reply_markup=None)
     if send_err:
         await state.set_state(PlayerPostStates.waiting_options)
         await state.update_data(post_add_profile=add_profile, post_add_play=add_play)
@@ -935,7 +936,10 @@ async def player_post_receive_text_from_options(message: types.Message, state: F
                 post_id = row[0].get("id")
                 new_kb = _channel_post_buttons(uid, add_profile, join_code, post_id=post_id, likes_count=0)
                 if new_kb:
-                    await message.bot.edit_message_reply_markup(chat_id=chat_target, message_id=sent_msg_id, reply_markup=new_kb)
+                    try:
+                        await message.bot.edit_message_reply_markup(chat_id=chat_target, message_id=sent_msg_id, reply_markup=new_kb)
+                    except Exception as e:
+                        logger.warning("edit_message_reply_markup (نشر منشور نص) failed: %s", e)
         except Exception:
             pass
     kb_after = []
@@ -968,10 +972,7 @@ async def player_post_receive_media_from_options(message: types.Message, state: 
             return await message.answer(f"⛔ {reason}")
     name = _get_player_name_for_post(uid, message.from_user.full_name)
     join_code = _create_deferred_2p_room(uid, name) if add_play else None
-    reply_kb = _channel_post_buttons(uid, add_profile, join_code)
-    ok, sent_msg_id, err = await _publish_media_to_channel(message.bot, message, name, reply_markup=reply_kb)
-    if not ok and reply_kb:
-        ok, sent_msg_id, err = await _publish_media_to_channel(message.bot, message, name, reply_markup=None)
+    ok, sent_msg_id, err = await _publish_media_to_channel(message.bot, message, name, reply_markup=None)
     if ok and sent_msg_id is not None:
         try:
             row = db_query(
@@ -982,7 +983,10 @@ async def player_post_receive_media_from_options(message: types.Message, state: 
                 post_id = row[0].get("id")
                 new_kb = _channel_post_buttons(uid, add_profile, join_code, post_id=post_id, likes_count=0)
                 if new_kb:
-                    await message.bot.edit_message_reply_markup(chat_id=chat_target, message_id=sent_msg_id, reply_markup=new_kb)
+                    try:
+                        await message.bot.edit_message_reply_markup(chat_id=chat_target, message_id=sent_msg_id, reply_markup=new_kb)
+                    except Exception as e:
+                        logger.warning("edit_message_reply_markup (ميديا من خيارات) failed: %s", e)
         except Exception:
             pass
     if ok:
@@ -1026,14 +1030,7 @@ async def player_post_receive_text(message: types.Message, state: FSMContext):
             join_code = _create_deferred_2p_room(uid, name)
         except Exception as e:
             logger.warning("player_post: create_room: %s", e)
-    reply_kb = _channel_post_buttons(uid, add_profile, join_code)
-    if (add_profile or join_code) and not reply_kb:
-        await message.answer(
-            "⚠️ تم ضبط الخيارات لكن **BOT_USERNAME** غير مضبوط، فالأزرار (حساب اللاعب، العب معي، لايك) لن تظهر.\n\n"
-            "اضبط BOT_USERNAME في Variables أو في channel_config ثم أعد المحاولة."
-        )
-        return
-    sent_msg_id, send_err = await _send_to_channel_safe(message.bot, chat_target, text_to_send, reply_markup=reply_kb)
+    sent_msg_id, send_err = await _send_to_channel_safe(message.bot, chat_target, text_to_send, reply_markup=None)
     if send_err:
         await message.answer(
             "❌ فشل النشر في القناة.\n\n"
@@ -1052,17 +1049,17 @@ async def player_post_receive_text(message: types.Message, state: FSMContext):
                 post_id = row[0].get("id")
                 new_kb = _channel_post_buttons(uid, add_profile, join_code, post_id=post_id, likes_count=0)
                 if new_kb:
-                    await message.bot.edit_message_reply_markup(chat_id=chat_target, message_id=sent_msg_id, reply_markup=new_kb)
+                    try:
+                        await message.bot.edit_message_reply_markup(chat_id=chat_target, message_id=sent_msg_id, reply_markup=new_kb)
+                    except Exception as e:
+                        logger.warning("edit_message_reply_markup (waiting_message text) failed: %s", e)
         except Exception as e:
             logger.exception("player_post: save_post: %s", e)
     kb_after = []
     if PUBLISH_CHANNEL_USERNAME:
         kb_after.append([InlineKeyboardButton(text="📢 الذهاب للقناة", url=f"https://t.me/{PUBLISH_CHANNEL_USERNAME.lstrip('@')}")])
     kb_after.append([InlineKeyboardButton(text="🔙 رجوع للقائمة الرئيسية", callback_data="home")])
-    msg = "✅ تم نشر منشورك في القناة."
-    if not reply_kb and (add_profile or join_code):
-        msg += "\n\n⚠️ لم تظهر الأزرار لأن BOT_USERNAME غير مضبوط. اضبطه في الإعدادات لنشرات لاحقة."
-    await message.answer(msg, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_after))
+    await message.answer("✅ تم نشر منشورك في القناة.", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_after))
 
 
 @router.message(PlayerPostStates.waiting_message, F.photo | F.voice | F.video | F.animation | F.sticker | F.document | F.audio | F.video_note)
@@ -1087,10 +1084,7 @@ async def player_post_receive_media(message: types.Message, state: FSMContext):
             join_code = _create_deferred_2p_room(uid, name)
         except Exception:
             pass
-    reply_kb = _channel_post_buttons(uid, add_profile, join_code)
-    ok, sent_msg_id, err = await _publish_media_to_channel(message.bot, message, name, reply_markup=reply_kb)
-    if not ok and reply_kb:
-        ok, sent_msg_id, err = await _publish_media_to_channel(message.bot, message, name, reply_markup=None)
+    ok, sent_msg_id, err = await _publish_media_to_channel(message.bot, message, name, reply_markup=None)
     if ok and sent_msg_id is not None:
         try:
             row = db_query(
@@ -1101,7 +1095,10 @@ async def player_post_receive_media(message: types.Message, state: FSMContext):
                 post_id = row[0].get("id")
                 new_kb = _channel_post_buttons(uid, add_profile, join_code, post_id=post_id, likes_count=0)
                 if new_kb:
-                    await message.bot.edit_message_reply_markup(chat_id=chat_target_media, message_id=sent_msg_id, reply_markup=new_kb)
+                    try:
+                        await message.bot.edit_message_reply_markup(chat_id=chat_target_media, message_id=sent_msg_id, reply_markup=new_kb)
+                    except Exception as e:
+                        logger.warning("edit_message_reply_markup (waiting_message media) failed: %s", e)
         except Exception as e:
             logger.exception("player_post: save_post media: %s", e)
     if ok:
@@ -1197,8 +1194,7 @@ async def player_post_fallback_recent(message: types.Message, state: FSMContext)
     text_to_send = _post_text_html(name, text)
     add_profile, add_play = True, False
     join_code = _create_deferred_2p_room(uid, name) if add_play else None
-    reply_kb = _channel_post_buttons(uid, add_profile, join_code)
-    sent_msg_id, send_err = await _send_to_channel_safe(message.bot, chat_target, text_to_send, reply_markup=reply_kb)
+    sent_msg_id, send_err = await _send_to_channel_safe(message.bot, chat_target, text_to_send, reply_markup=None)
     if send_err:
         await message.answer(
             "❌ فشل النشر (الحالة انتهت لكن حاولنا النشر).\n\n"
@@ -1215,7 +1211,10 @@ async def player_post_fallback_recent(message: types.Message, state: FSMContext)
             if row:
                 new_kb = _channel_post_buttons(uid, add_profile, join_code, post_id=row[0].get("id"), likes_count=0)
                 if new_kb:
-                    await message.bot.edit_message_reply_markup(chat_id=chat_target, message_id=sent_msg_id, reply_markup=new_kb)
+                    try:
+                        await message.bot.edit_message_reply_markup(chat_id=chat_target, message_id=sent_msg_id, reply_markup=new_kb)
+                    except Exception as e:
+                        logger.warning("edit_message_reply_markup (fallback) failed: %s", e)
         except Exception:
             pass
     kb_after = []
