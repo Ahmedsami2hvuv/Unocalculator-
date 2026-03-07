@@ -481,6 +481,19 @@ def create_replay_session(players: list, room: dict, mode: str, summary_text: st
     }
     try:
         db_query(
+            """CREATE TABLE IF NOT EXISTS replay_sessions (
+                replay_id VARCHAR(16) PRIMARY KEY,
+                summary TEXT,
+                winner_id BIGINT,
+                players_json TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )""",
+            commit=True
+        )
+    except Exception:
+        pass
+    try:
+        db_query(
             "INSERT INTO replay_sessions (replay_id, summary, winner_id, players_json) VALUES (%s, %s, %s, %s)",
             (replay_id, summary_text, winner_id, json.dumps(players_list)),
             commit=True
