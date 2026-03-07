@@ -32,12 +32,12 @@ async def main():
     # 2. إعداد الموزع (Dispatcher) مع ذاكرة مؤقتة للـ States
     dp = Dispatcher(storage=MemoryStorage())
 
-    # 3. ربط الراوترات بالترتيب الصحيح (النشر أولاً ثم الأدمن ثم الباقي)
+    # 3. ربط الراوترات: common أولاً حتى يصل طلب المساعدة (حالة help_request) للإدارة قبل أي معالج آخر
+    dp.include_router(common_router)
     if _use_publish_router:
         dp.include_router(community_publish_router)
     dp.include_router(admin_router)
     dp.include_router(reports_router)
-    dp.include_router(common_router)
     dp.include_router(room_2p_router)
     dp.include_router(room_multi_router)
     dp.include_router(calc_router)
