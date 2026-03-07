@@ -252,6 +252,8 @@ async def report_confirm_cancel(c: types.CallbackQuery, state: FSMContext):
 
 
 def _user_detail_for_admin(u: dict) -> str:
+    if not u or not isinstance(u, dict):
+        return "—"
     uid = u.get("user_id")
     name = (u.get("player_name") or "—")
     tg_username = (u.get("username") or "").strip() or "—"
