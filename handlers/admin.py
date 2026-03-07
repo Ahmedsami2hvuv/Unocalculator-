@@ -15,10 +15,16 @@ from database import db_query
 router = Router(name="admin")
 
 def _admin_ids():
-    raw = os.getenv("ADMIN_ID", "").strip()
-    if not raw:
-        return set()
-    return set(int(x.strip()) for x in raw.split(",") if x.strip().isdigit())
+    ids = set()
+    for key in ("ADMIN_ID", "ADMIN_IDS", "ADMIN_TELEGRAM_ID"):
+        raw = os.getenv(key, "").strip()
+        if not raw:
+            continue
+        for x in raw.split(","):
+            x = x.strip()
+            if x.isdigit():
+                ids.add(int(x))
+    return ids
 
 def is_admin(user_id: int) -> bool:
     return user_id in _admin_ids()
@@ -189,6 +195,7 @@ def _admin_menu_kb():
         [InlineKeyboardButton(text="📢 اذاعة بث للجميع", callback_data="admin_broadcast")],
         [InlineKeyboardButton(text="📡 اختبار النشر في القناة", callback_data="admin_test_publish")],
         [InlineKeyboardButton(text="📋 التبليغات", callback_data="admin_reports")],
+        [InlineKeyboardButton(text="🆘 طلبات المساعدة", callback_data="admin_help_requests")],
         [InlineKeyboardButton(text="📊 عدد اللاعبين وإحصائيات", callback_data="admin_stats")],
         [InlineKeyboardButton(text="👥 قائمة اللاعبين / بحث وتعديل", callback_data="admin_players")],
         [InlineKeyboardButton(text="🛏 الغرف المفتوحة والمتروكة", callback_data="admin_rooms")],
@@ -241,6 +248,53 @@ async def admin_back(c: types.CallbackQuery, state: FSMContext):
     await c.answer()
 
 
+@router.callback_query(F.data == "admin_help_requests")
+async def admin_help_requests_list(c: types.CallbackQuery, state: FSMContext):
+    if not _admin_only(c):
+        return await c.answer("⛔ غير مسموح.", show_alert=True)
+    try:
+        db_query(
+            """CREATE TABLE IF NOT EXISTS help_requests (
+                id SERIAL PRIMARY KEY,
+                user_id BIGINT NOT NULL,
+                body_text TEXT NOT NULL,
+                has_media BOOLEAN DEFAULT FALSE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )""",
+            commit=True
+        )
+    except Exception:
+        pass
+    try:
+        rows = db_query(
+            "SELECT id, user_id, body_text, has_media, created_at FROM help_requests ORDER BY created_at DESC LIMIT 40",
+            ()
+        )
+    except Exception:
+        rows = []
+    if not rows:
+        text = "🆘 **طلبات المساعدة**\n\nلا توجد طلبات مساعدة حتى الآن."
+    else:
+        text = "🆘 **طلبات المساعدة** (آخر 40)\n\n"
+        for r in rows:
+            rid = r.get("id")
+            uid = r.get("user_id")
+            created = r.get("created_at")
+            when = created.strftime("%Y-%m-%d %H:%M") if hasattr(created, "strftime") else str(created)
+            body = (r.get("body_text") or "")[:400]
+            if len((r.get("body_text") or "")) > 400:
+                body += "..."
+            text += f"——— #{rid} — ايدي: {uid} — {when} —\n{body}\n\n"
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔙 رجوع", callback_data="admin_back")]
+    ])
+    try:
+        await c.message.edit_text(text[:4000], reply_markup=kb, parse_mode="Markdown")
+    except Exception:
+        await c.message.edit_text(text[:4000].replace("*", ""), reply_markup=kb)
+    await c.answer()
+
+
 # --- اذاعة بث (نص، صورة، فيديو، ملف، أي وسائط) ---
 @router.callback_query(F.data == "admin_broadcast")
 async def admin_broadcast_start(c: types.CallbackQuery, state: FSMContext):
@@ -248,7 +302,10 @@ async def admin_broadcast_start(c: types.CallbackQuery, state: FSMContext):
         return await c.answer("⛔ غير مسموح.", show_alert=True)
     await state.set_state(AdminStates.broadcast_text)
     await c.message.edit_text(
-        "📢 **اذاعة بث**\n\nأرسل **أي شيء** تريد إرساله للجميع:\n• نص\n• صورة\n• فيديو\n• ملف (مستند)\n• صوت\n• صوتية\n\nلإلغاء أرسل: /cancel",
+        "📢 **اذاعة بث**\n\nأرسل **أي شيء** تريد إرساله للجميع:\n• نص\n• صورة\n• فيديو\n• ملف (مستند)\n• صوت\n• صوتية\n\nلإلغاء اضغط **رجوع**.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔙 رجوع", callback_data="admin_back")]
+        ]),
         parse_mode="Markdown")
     await c.answer()
 
@@ -320,7 +377,7 @@ async def _send_broadcast_to_user(bot, uid: int, message: types.Message, text: s
 async def admin_broadcast_send_text(message: types.Message, state: FSMContext):
     if not is_admin(message.from_user.id):
         return
-    if message.text and message.text.strip() == "/cancel":
+    if message.text and message.text.strip().lower() in ("/cancel", "cancel", "الغاء", "إلغاء"):
         await state.clear()
         return await message.answer("تم الإلغاء.", reply_markup=_admin_broadcast_done_kb())
     text = message.text or ""
@@ -676,7 +733,10 @@ async def admin_report_complete_ask(c: types.CallbackQuery, state: FSMContext):
     await state.set_state(AdminStates.report_reply_to_reporter)
     await state.update_data(admin_report_id=report_id, admin_report_outcome="completed")
     await c.message.edit_text(
-        "✅ **تم إكمال التبليغ**\n\nأرسل الآن **رسالتك للمبلّغ** (مثل: تم مراجعة تبليغك وتم حظره).\n\nيمكنك إرسال: نص، صورة، صوت، أو أي وسائط.\n\nلإلغاء: /cancel",
+        "✅ **تم إكمال التبليغ**\n\nأرسل الآن **رسالتك للمبلّغ** (مثل: تم مراجعة تبليغك وتم حظره).\n\nيمكنك إرسال: نص، صورة، صوت، أو أي وسائط.\n\nلإلغاء اضغط **رجوع**.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔙 رجوع", callback_data="admin_back")]
+        ]),
         parse_mode="Markdown"
     )
     await c.answer()
@@ -693,7 +753,10 @@ async def admin_report_reject_ask(c: types.CallbackQuery, state: FSMContext):
     await state.set_state(AdminStates.report_reply_to_reporter)
     await state.update_data(admin_report_id=report_id, admin_report_outcome="rejected")
     await c.message.edit_text(
-        "❌ **مرفوض**\n\nأرسل الآن **رسالتك للمبلّغ** (مثل: تم مراجعة تبليغك - التبليغ مرفوض).\n\nيمكنك إرسال: نص، صورة، صوت، أو أي وسائط.\n\nلإلغاء: /cancel",
+        "❌ **مرفوض**\n\nأرسل الآن **رسالتك للمبلّغ** (مثل: تم مراجعة تبليغك - التبليغ مرفوض).\n\nيمكنك إرسال: نص، صورة، صوت، أو أي وسائط.\n\nلإلغاء اضغط **رجوع**.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔙 رجوع", callback_data="admin_back")]
+        ]),
         parse_mode="Markdown"
     )
     await c.answer()
@@ -808,7 +871,7 @@ async def admin_search_ask(c: types.CallbackQuery, state: FSMContext):
         "• يوزر البوت (بدون @)\n"
         "• يوزر التليجرام (بدون @)\n"
         "• اسم اللاعب (باللعبة)\n"
-        "• عدد النقاط (رقم)\n\nلإلغاء: /cancel"
+        "• عدد النقاط (رقم)\n\nلإلغاء اضغط **رجوع**."
     )
     await c.answer()
 
@@ -1138,7 +1201,7 @@ async def admin_edit_field_ask(c: types.CallbackQuery, state: FSMContext):
         "password": "أرسل كلمة السر الجديدة:",
         "points": "أرسل عدد النقاط (رقم صحيح):",
     }
-    await c.message.edit_text(prompts.get(field, "أرسل القيمة الجديدة:") + "\n\nلإلغاء: /cancel")
+    await c.message.edit_text(prompts.get(field, "أرسل القيمة الجديدة:") + "\n\nلإلغاء اضغط **رجوع**.")
     await c.answer()
 
 
@@ -1156,7 +1219,7 @@ async def admin_edit_value_done(message: types.Message, state: FSMContext):
     field = data.get("admin_edit_field")
     value = (message.text or "").strip()
     if not value:
-        return await message.answer("القيمة فارغة. أعد المحاولة أو /cancel")
+        return await message.answer("القيمة فارغة. أعد المحاولة أو اضغط رجوع.")
     try:
         if field == "name":
             db_query("UPDATE users SET player_name = %s WHERE user_id = %s", (value[:100], target_uid), commit=True)
