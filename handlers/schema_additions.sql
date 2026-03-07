@@ -74,3 +74,12 @@ CREATE TABLE IF NOT EXISTS replay_sessions (
     players_json TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+-- طلبات المساعدة (لعرضها في لوحة الأدمن وإرسالها للمدير)
+CREATE TABLE IF NOT EXISTS help_requests (
+    id SERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL,
+    body_text TEXT NOT NULL,
+    has_media BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
