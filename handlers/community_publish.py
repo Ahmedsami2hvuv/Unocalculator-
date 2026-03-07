@@ -335,12 +335,8 @@ async def player_post_receive_text_pending(message: types.Message, state: FSMCon
         return
     if sent_msg_id is not None:
         try:
-            row = db_query(
-                "INSERT INTO channel_posts (channel_id, message_id, publisher_uid, add_profile, join_code) VALUES (%s, %s, %s, %s, %s) RETURNING id",
-                (str(chat_target), sent_msg_id, uid, bool(add_profile), join_code), commit=True
-            )
-            if row:
-                post_id = row[0].get("id")
+            post_id = _save_channel_post_and_get_id(chat_target, sent_msg_id, uid, add_profile, join_code)
+            if post_id is not None:
                 new_kb = _channel_post_buttons(uid, add_profile, join_code, post_id=post_id, likes_count=0)
                 if new_kb:
                     try:
@@ -397,12 +393,8 @@ async def player_post_receive_media_pending(message: types.Message, state: FSMCo
         ok, sent_msg_id, err = await _publish_media_to_channel(message.bot, message, name, reply_markup=None)
     if ok and sent_msg_id is not None:
         try:
-            row = db_query(
-                "INSERT INTO channel_posts (channel_id, message_id, publisher_uid, add_profile, join_code) VALUES (%s, %s, %s, %s, %s) RETURNING id",
-                (str(chat_target), sent_msg_id, uid, bool(add_profile), join_code), commit=True
-            )
-            if row:
-                post_id = row[0].get("id")
+            post_id = _save_channel_post_and_get_id(chat_target, sent_msg_id, uid, add_profile, join_code)
+            if post_id is not None:
                 new_kb = _channel_post_buttons(uid, add_profile, join_code, post_id=post_id, likes_count=0)
                 if new_kb:
                     try:
@@ -451,6 +443,24 @@ def _normalize_channel_target():
     un = (PUBLISH_CHANNEL_USERNAME or "").strip().strip('"').strip("'").lstrip("@")
     if un:
         return f"@{un}"
+    return None
+
+
+def _save_channel_post_and_get_id(channel_id, message_id, publisher_uid, add_profile, join_code):
+    """حفظ منشور في channel_posts وإرجاع post_id. (db_query مع commit=True قد يعيد bool بدل الصفوف.)"""
+    try:
+        db_query(
+            "INSERT INTO channel_posts (channel_id, message_id, publisher_uid, add_profile, join_code) VALUES (%s, %s, %s, %s, %s)",
+            (str(channel_id), message_id, publisher_uid, bool(add_profile), join_code), commit=True
+        )
+        row = db_query(
+            "SELECT id FROM channel_posts WHERE channel_id = %s AND message_id = %s ORDER BY id DESC LIMIT 1",
+            (str(channel_id), message_id)
+        )
+        if row and isinstance(row, list) and len(row) > 0 and hasattr(row[0], "get"):
+            return row[0].get("id")
+    except Exception as e:
+        logger.warning("_save_channel_post_and_get_id: %s", e)
     return None
 
 
@@ -895,12 +905,8 @@ async def player_post_receive_text_from_options(message: types.Message, state: F
             )
             return
         try:
-            row = db_query(
-                "INSERT INTO channel_posts (channel_id, message_id, publisher_uid, add_profile, join_code) VALUES (%s, %s, %s, %s, %s) RETURNING id",
-                (str(chat_target), sent_mid, winner_id, bool(add_profile), join_code), commit=True
-            )
-            if row:
-                post_id = row[0].get("id")
+            post_id = _save_channel_post_and_get_id(chat_target, sent_mid, winner_id, add_profile, join_code)
+            if post_id is not None:
                 new_kb = _channel_post_buttons(winner_id, add_profile, join_code, post_id=post_id, likes_count=0)
                 if new_kb:
                     try:
@@ -934,12 +940,8 @@ async def player_post_receive_text_from_options(message: types.Message, state: F
         return
     if sent_msg_id is not None:
         try:
-            row = db_query(
-                "INSERT INTO channel_posts (channel_id, message_id, publisher_uid, add_profile, join_code) VALUES (%s, %s, %s, %s, %s) RETURNING id",
-                (str(chat_target), sent_msg_id, uid, bool(add_profile), join_code), commit=True
-            )
-            if row:
-                post_id = row[0].get("id")
+            post_id = _save_channel_post_and_get_id(chat_target, sent_msg_id, uid, add_profile, join_code)
+            if post_id is not None:
                 new_kb = _channel_post_buttons(uid, add_profile, join_code, post_id=post_id, likes_count=0)
                 if new_kb:
                     try:
@@ -984,12 +986,8 @@ async def player_post_receive_media_from_options(message: types.Message, state: 
         ok, sent_msg_id, err = await _publish_media_to_channel(message.bot, message, name, reply_markup=None)
     if ok and sent_msg_id is not None:
         try:
-            row = db_query(
-                "INSERT INTO channel_posts (channel_id, message_id, publisher_uid, add_profile, join_code) VALUES (%s, %s, %s, %s, %s) RETURNING id",
-                (str(chat_target), sent_msg_id, uid, bool(add_profile), join_code), commit=True
-            )
-            if row:
-                post_id = row[0].get("id")
+            post_id = _save_channel_post_and_get_id(chat_target, sent_msg_id, uid, add_profile, join_code)
+            if post_id is not None:
                 new_kb = _channel_post_buttons(uid, add_profile, join_code, post_id=post_id, likes_count=0)
                 if new_kb:
                     try:
@@ -1051,12 +1049,8 @@ async def player_post_receive_text(message: types.Message, state: FSMContext):
         return
     if sent_msg_id is not None:
         try:
-            row = db_query(
-                "INSERT INTO channel_posts (channel_id, message_id, publisher_uid, add_profile, join_code) VALUES (%s, %s, %s, %s, %s) RETURNING id",
-                (str(chat_target), sent_msg_id, uid, bool(add_profile), join_code), commit=True
-            )
-            if row:
-                post_id = row[0].get("id")
+            post_id = _save_channel_post_and_get_id(chat_target, sent_msg_id, uid, add_profile, join_code)
+            if post_id is not None:
                 new_kb = _channel_post_buttons(uid, add_profile, join_code, post_id=post_id, likes_count=0)
                 if new_kb:
                     try:
@@ -1100,12 +1094,8 @@ async def player_post_receive_media(message: types.Message, state: FSMContext):
         ok, sent_msg_id, err = await _publish_media_to_channel(message.bot, message, name, reply_markup=None)
     if ok and sent_msg_id is not None:
         try:
-            row = db_query(
-                "INSERT INTO channel_posts (channel_id, message_id, publisher_uid, add_profile, join_code) VALUES (%s, %s, %s, %s, %s) RETURNING id",
-                (str(chat_target_media), sent_msg_id, uid, bool(add_profile), join_code), commit=True
-            )
-            if row:
-                post_id = row[0].get("id")
+            post_id = _save_channel_post_and_get_id(chat_target_media, sent_msg_id, uid, add_profile, join_code)
+            if post_id is not None:
                 new_kb = _channel_post_buttons(uid, add_profile, join_code, post_id=post_id, likes_count=0)
                 if new_kb:
                     try:
@@ -1217,13 +1207,9 @@ async def player_post_fallback_recent(message: types.Message, state: FSMContext)
         return
     if sent_msg_id is not None:
         try:
-            db_query(
-                "INSERT INTO channel_posts (channel_id, message_id, publisher_uid, add_profile, join_code) VALUES (%s, %s, %s, %s, %s)",
-                (str(chat_target), sent_msg_id, uid, bool(add_profile), join_code), commit=True
-            )
-            row = db_query("SELECT id FROM channel_posts WHERE message_id = %s AND channel_id = %s", (sent_msg_id, str(chat_target)))
-            if row:
-                new_kb = _channel_post_buttons(uid, add_profile, join_code, post_id=row[0].get("id"), likes_count=0)
+            post_id = _save_channel_post_and_get_id(chat_target, sent_msg_id, uid, add_profile, join_code)
+            if post_id is not None:
+                new_kb = _channel_post_buttons(uid, add_profile, join_code, post_id=post_id, likes_count=0)
                 if new_kb:
                     try:
                         await message.bot.edit_message_reply_markup(chat_id=chat_target, message_id=sent_msg_id, reply_markup=new_kb)
