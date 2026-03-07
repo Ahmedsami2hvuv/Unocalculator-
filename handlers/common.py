@@ -576,7 +576,8 @@ def build_game_end_keyboard(replay_id: str, for_user_id: int) -> InlineKeyboardM
             pass
         kb.append([InlineKeyboardButton(text=share_btn_text, callback_data=f"share_result_{replay_id}")])
     kb.append([InlineKeyboardButton(text="🔄 لعب مرة أخرى", callback_data=f"replay_{replay_id}")])
-    kb.append([InlineKeyboardButton(text="📋 تبليغ على لاعب", callback_data=f"report_{replay_id}")])
+    if replay_id and str(replay_id) != "None":
+        kb.append([InlineKeyboardButton(text="📋 تبليغ على لاعب", callback_data=f"report_{replay_id}")])
     kb.append([InlineKeyboardButton(text=t(for_user_id, "btn_home"), callback_data="home")])
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
