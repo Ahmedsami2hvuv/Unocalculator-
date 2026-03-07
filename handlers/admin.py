@@ -1046,10 +1046,12 @@ def _user_detail_text(u: dict) -> str:
     lang = _esc(u.get("language") or "ar")
     banned = u.get("is_banned") in (True, 1, "t", "true")
     ban_line = "\n🚫 <b>محظور:</b> نعم" if banned else "\n🚫 <b>محظور:</b> لا"
-    uid_link = f' {uid} — اضغط للتواصل مع اللاعب '
+    # رابط tg://user?id= يفتح محادثة اللاعب حتى بدون يوزرنيم (نص الرابط ليس أرقاماً فقط لئلا يفسّره تيليجرام كرقم هاتف)
+    open_chat_link = f'<a href="tg://user?id={uid}">🔗 اضغط هنا لفتح محادثة اللاعب</a>'
     return (
         "👤 معلومات اللاعب\n\n"
-        f"🆔 الايدي: {uid_link}\n"
+        f"🆔 الايدي: {uid}\n"
+        f"{open_chat_link}\n"
         f"📱 يوزر تليجرام: {tg_username}\n"
         f"📛 الاسم: {name}\n"
         f"👤 يوزر البوت: @{uname}\n"
@@ -1063,6 +1065,7 @@ def _user_detail_text(u: dict) -> str:
 
 def _admin_user_detail_kb(uid: int, is_banned: bool = False):
     rows = [
+        [InlineKeyboardButton(text="💬 طلب دردشة", callback_data=f"admin_chat_request_{uid}")],
         [InlineKeyboardButton(text="📉 من يتابع (قائمة)", callback_data=f"admin_list_following_{uid}")],
         [InlineKeyboardButton(text="📈 من يتابعونه (قائمة)", callback_data=f"admin_list_followers_{uid}")],
         [InlineKeyboardButton(text="✏️ تعديل الاسم", callback_data=f"admin_ef_name_{uid}")],
