@@ -111,7 +111,7 @@ TEXTS = {
         "btn_following_list": "👥 أتابعهم",
         "btn_friends": "👥 الأصدقاء",
         "btn_calc": "🧮 حاسبة أونو",
-        "btn_rules": "📜 القوانين",
+        "btn_rules": "📜 قوانين اللعب",
         "btn_leaderboard": "📊 الإحصائيات",
         "btn_bot_info": "ℹ️ معلومات البوت",
         "btn_change_lang": "🌍 تغيير اللغة",
