@@ -145,10 +145,14 @@ async def report_choose_type(c: types.CallbackQuery, state: FSMContext):
         report_extra=None,
     )
     await state.set_state(ReportStates.report_upload)
+    kb_upload = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔙 رجوع", callback_data=f"report_upload_back_{replay_id}_{reported_id}")],
+    ])
     await c.message.edit_text(
         "📷 **الخطوة التالية:** أرسل **صورة سكرين شوت** للحالة التي رأيتها (صورة واحدة على الأقل).\n\n"
         "بعد إرسال الصورة سيُطلب منك إضافة المزيد أو كتابة ملاحظة ثم إرسال التبليغ.",
-        parse_mode="Markdown"
+        parse_mode="Markdown",
+        reply_markup=kb_upload
     )
     await c.answer()
 
@@ -158,6 +162,7 @@ async def report_receive_photo(message: types.Message, state: FSMContext):
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="نعم لدي صورة أو ملاحظة أخرى", callback_data="report_more_yes")],
         [InlineKeyboardButton(text="إرسال التبليغ", callback_data="report_more_done")],
+        [InlineKeyboardButton(text="🔙 رجوع", callback_data="home")],
     ])
     try:
         data = await state.get_data()
@@ -179,15 +184,18 @@ async def report_upload_expect_photo(message: types.Message, state: FSMContext):
         await state.clear()
         kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 رجوع", callback_data="home")]])
         return await message.answer("تم الإلغاء.", reply_markup=kb)
-    await message.answer("يرجى إرسال **صورة سكرين شوت** أولاً (صورة واحدة على الأقل). لإلغاء التبليغ اضغط **رجوع**.")
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 رجوع", callback_data="home")]])
+    await message.answer("يرجى إرسال **صورة سكرين شوت** أولاً (صورة واحدة على الأقل). لإلغاء التبليغ اضغط **رجوع**.", reply_markup=kb, parse_mode="Markdown")
 
 
 @router.callback_query(ReportStates.report_more, F.data == "report_more_yes")
 async def report_more_yes(c: types.CallbackQuery, state: FSMContext):
     await state.set_state(ReportStates.report_more)
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 رجوع", callback_data="home")]])
     await c.message.edit_text(
         "أرسل **صورة إضافية** أو اكتب **ملاحظتك** / ما حدث مع اللاعب.\n\n"
-        "بعد الإرسال يمكنك إضافة المزيد أو الضغط على «إرسال التبليغ» من الرسالة التالية."
+        "بعد الإرسال يمكنك إضافة المزيد أو الضغط على «إرسال التبليغ» من الرسالة التالية.",
+        reply_markup=kb
     )
     await c.answer()
 
@@ -220,6 +228,7 @@ async def report_more_receive_photo(message: types.Message, state: FSMContext):
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="نعم لدي صورة أو ملاحظة أخرى", callback_data="report_more_yes")],
         [InlineKeyboardButton(text="إرسال التبليغ", callback_data="report_more_done")],
+        [InlineKeyboardButton(text="🔙 رجوع", callback_data="home")],
     ])
     await message.answer("✅ تم حفظ الصورة.\n\nهل لديك صورة أخرى أو ملاحظة؟", reply_markup=kb)
 
@@ -240,6 +249,7 @@ async def report_more_receive_text(message: types.Message, state: FSMContext):
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="نعم لدي صورة أو ملاحظة أخرى", callback_data="report_more_yes")],
         [InlineKeyboardButton(text="إرسال التبليغ", callback_data="report_more_done")],
+        [InlineKeyboardButton(text="🔙 رجوع", callback_data="home")],
     ])
     await message.answer("✅ تم حفظ الملاحظة.\n\nهل لديك صورة أخرى أو ملاحظة إضافية؟", reply_markup=kb)
 
