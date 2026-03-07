@@ -290,7 +290,18 @@ def _has_pending_post(message: types.Message) -> bool:
     return _get_pending_post(uid) is not None
 
 
-@router.message(F.text, _has_pending_post)
+class _FilterNotHelpRequest(BaseFilter):
+    """يمرّر عندما المستخدم ليس في حالة طلب المساعدة (حتى لا تُلتقط رسالة المساعدة كنشر)."""
+    async def __call__(self, *args, **kwargs) -> bool:
+        data = args[1] if len(args) > 1 else kwargs.get("data", {})
+        state = (data.get("state") if isinstance(data, dict) else None) or kwargs.get("state")
+        if not state:
+            return True
+        current = (await state.get_state()) or ""
+        return "help_request" not in (current or "")
+
+
+@router.message(F.text, _FilterNotHelpRequest(), _has_pending_post)
 async def player_post_receive_text_pending(message: types.Message, state: FSMContext):
     uid = message.from_user.id
     logger.info("player_post_receive_text_pending: processing uid=%s", uid)
@@ -357,7 +368,7 @@ async def player_post_receive_text_pending(message: types.Message, state: FSMCon
     await message.answer("✅ تم نشر منشورك في القناة.", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_after))
 
 
-@router.message(F.photo | F.voice | F.video | F.animation | F.sticker | F.document | F.audio | F.video_note, _has_pending_post)
+@router.message(F.photo | F.voice | F.video | F.animation | F.sticker | F.document | F.audio | F.video_note, _FilterNotHelpRequest(), _has_pending_post)
 async def player_post_receive_media_pending(message: types.Message, state: FSMContext):
     uid = message.from_user.id
     opts = _get_and_clear_pending_post(uid)
@@ -1142,10 +1153,13 @@ class _FilterPostFallback(BaseFilter):
         uid = message.from_user.id if getattr(message, "from_user", None) else None
         if not uid:
             return False
-        state = data.get("state") if isinstance(data, dict) else None
+        state = (data.get("state") if isinstance(data, dict) else None) or kwargs.get("state")
         if not state:
             return False
-        current = await state.get_state()
+        current = (await state.get_state()) or ""
+        # عدم اعتبار رسالة «طلب مساعدة» كنشر — تركها لمعالج طلب المساعدة في common
+        if "help_request" in (current or ""):
+            return False
         if current in (PlayerPostStates.waiting_options.state, PlayerPostStates.waiting_message.state):
             return False
         if _get_pending_post(uid):
@@ -1167,6 +1181,11 @@ class _FilterPostFallbackChannelMissing(BaseFilter):
         uid = message.from_user.id if getattr(message, "from_user", None) else None
         if not uid:
             return False
+        state = (data.get("state") if isinstance(data, dict) else None) or kwargs.get("state")
+        if state:
+            current = (await state.get_state()) or ""
+            if "help_request" in (current or ""):
+                return False
         if time.time() - (_last_post_options_at.get(uid) or 0) > _LAST_POST_OPTIONS_WINDOW:
             return False
         if _normalize_channel_target():
