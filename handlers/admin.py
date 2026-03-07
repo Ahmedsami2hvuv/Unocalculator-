@@ -15,13 +15,17 @@ from database import db_query
 router = Router(name="admin")
 
 def _admin_ids():
+    """نفس منطق common._get_admin_ids: إزالة علامات الاقتباس لدعم Railway Variables."""
     ids = set()
     for key in ("ADMIN_ID", "ADMIN_IDS", "ADMIN_TELEGRAM_ID"):
-        raw = os.getenv(key, "").strip()
+        raw = os.getenv(key, "")
+        if raw is None:
+            continue
+        raw = str(raw).strip().strip('"').strip("'").strip()
         if not raw:
             continue
         for x in raw.split(","):
-            x = x.strip()
+            x = str(x).strip().strip('"').strip("'")
             if x.isdigit():
                 ids.add(int(x))
     return ids
