@@ -626,6 +626,7 @@ class RoomStates(StatesGroup):
     complete_profile_name = State()
     complete_profile_password = State()
     help_request = State()
+    chat_with_admin = State()  # محادثة مع الإدارة (بعد قبول طلب المحادثة)
 
 
 # مجتمع الأونو والنشر: تم نقله إلى handlers/community_publish.py
@@ -1837,8 +1838,37 @@ async def help_request_back(c: types.CallbackQuery, state: FSMContext):
     await c.answer()
 
 
+# ترجمة أسماء حقول قاعدة البيانات إلى العربية في ملف اللاعب
+_USER_FIELD_AR = {
+    "user_id": "معرف المستخدم",
+    "userid": "معرف المستخدم",
+    "playername": "اسم اللاعب",
+    "player_name": "اسم اللاعب",
+    "username": "اسم المستخدم (تليجرام)",
+    "usernamekey": "يوزر البوت",
+    "username_key": "يوزر البوت",
+    "password": "كلمة المرور",
+    "passwordkey": "رمز السري",
+    "password_key": "رمز السري",
+    "onlinepoints": "النقاط الإلكترونية",
+    "online_points": "النقاط الإلكترونية",
+    "language": "اللغة",
+    "lastseen": "آخر ظهور",
+    "isregistered": "مسجّل",
+    "is_registered": "مسجّل",
+    "isbanned": "محظور",
+    "is_banned": "محظور",
+    "loggedout": "تسجيل خروج",
+    "logged_out": "تسجيل خروج",
+    "isprivate": "حساب خاص",
+    "is_private": "حساب خاص",
+    "allowspectate": "السماح بالمشاهدة",
+    "allow_spectate": "السماح بالمشاهدة",
+}
+
+
 def _build_user_file_text(uid: int, from_user: types.User) -> str:
-    """بناء نص ملف اللاعب الكامل من قاعدة البيانات + بيانات تليجرام."""
+    """بناء نص ملف اللاعب الكامل من قاعدة البيانات + بيانات تليجرام (الحقول بالعربية)."""
     lines = ["═══════ ملف اللاعب ═══════", f"ايدي تليجرام: {uid}", f"الاسم في تليجرام: {from_user.full_name or '-'}", f"اليوزر: @{from_user.username}" if from_user.username else "اليوزر: -", ""]
     try:
         user_row = db_query("SELECT * FROM users WHERE user_id = %s", (uid,))
@@ -1848,12 +1878,26 @@ def _build_user_file_text(uid: int, from_user: types.User) -> str:
                 val = row[key]
                 if val is None:
                     val = ""
-                lines.append(f"{key}: {val}")
+                label = _USER_FIELD_AR.get(key) or _USER_FIELD_AR.get(key.lower()) or key
+                lines.append(f"{label}: {val}")
         else:
             lines.append("(لا يوجد سجل في جدول users بعد)")
     except Exception as e:
         lines.append(f"(خطأ عند قراءة users: {e})")
     return "\n".join(lines)
+
+
+def _help_request_admin_kb(uid: int) -> InlineKeyboardMarkup:
+    """أزرار تحت رسالة طلب المساعدة عند الإدارة: المساعدات، القائمة، طلب محادثة."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📋 الذهاب لطلبات المساعدة", callback_data="admin_help_requests")],
+        [InlineKeyboardButton(text="🏠 القائمة الرئيسية", callback_data="admin_back")],
+        [InlineKeyboardButton(text="💬 طلب محادثة مع اللاعب", callback_data=f"admin_chat_request_{uid}")],
+    ])
+
+
+# طلبات محادثة الإدارة مع اللاعب: user_id -> admin_id (يُعيّن من admin عند الضغط على «طلب محادثة»)
+_pending_chat_requests = {}
 
 
 def _ensure_help_requests_table():
@@ -1944,24 +1988,25 @@ async def help_request_text(message: types.Message, state: FSMContext):
         if len(file_text) > 3800:
             msg_body += "\n\n...(مختصر)"
         full_msg = "🆘 **طلب مساعدة**\n\n" + msg_body
+        kb_admin = _help_request_admin_kb(uid)
         for aid in admin_ids:
             try:
-                await message.bot.send_message(aid, full_msg, parse_mode="Markdown")
+                await message.bot.send_message(aid, full_msg, parse_mode="Markdown", reply_markup=kb_admin)
                 sent_any = True
             except Exception as e1:
                 try:
-                    await message.bot.send_message(aid, "🆘 طلب مساعدة\n\n" + msg_body.replace("*", "").replace("_", ""))
+                    await message.bot.send_message(aid, "🆘 طلب مساعدة\n\n" + msg_body.replace("*", "").replace("_", ""), reply_markup=kb_admin)
                     sent_any = True
                 except Exception as e2:
                     logger.warning("help_request: send to admin %s failed: %s then %s (المدير يجب أن يضغط /start على البوت أولاً)", aid, e1, e2)
         if help_chat_id:
             try:
                 ch_id = int(help_chat_id) if help_chat_id.lstrip("-").isdigit() else help_chat_id
-                await message.bot.send_message(ch_id, full_msg, parse_mode="Markdown")
+                await message.bot.send_message(ch_id, full_msg, parse_mode="Markdown", reply_markup=kb_admin)
                 sent_any = True
             except Exception as e1:
                 try:
-                    await message.bot.send_message(ch_id, "🆘 طلب مساعدة\n\n" + msg_body.replace("*", "").replace("_", ""))
+                    await message.bot.send_message(ch_id, "🆘 طلب مساعدة\n\n" + msg_body.replace("*", "").replace("_", ""), reply_markup=kb_admin)
                     sent_any = True
                 except Exception as e2:
                     logger.warning("help_request: send to HELP_CHAT_ID %s failed: %s then %s", help_chat_id, e1, e2)
@@ -2022,9 +2067,10 @@ async def help_request_media(message: types.Message, state: FSMContext):
     if len(file_text) > 3800:
         msg_body += "\n\n...(مختصر)"
     sent_any = False
+    kb_admin = _help_request_admin_kb(uid)
     for aid in admin_ids:
         try:
-            await message.bot.send_message(aid, "🆘 **طلب مساعدة**\n\n" + msg_body, parse_mode="Markdown")
+            await message.bot.send_message(aid, "🆘 **طلب مساعدة**\n\n" + msg_body, parse_mode="Markdown", reply_markup=kb_admin)
             if message.photo:
                 await message.bot.send_photo(aid, message.photo[-1].file_id, caption=caption_long[:1000])
             elif message.voice:
@@ -2037,7 +2083,7 @@ async def help_request_media(message: types.Message, state: FSMContext):
             sent_any = True
         except Exception as e:
             try:
-                await message.bot.send_message(aid, "🆘 طلب مساعدة\n\n" + msg_body.replace("*", "").replace("_", ""))
+                await message.bot.send_message(aid, "🆘 طلب مساعدة\n\n" + msg_body.replace("*", "").replace("_", ""), reply_markup=kb_admin)
                 if message.photo:
                     await message.bot.send_photo(aid, message.photo[-1].file_id, caption=caption_long[:1000])
                 elif message.voice:
@@ -2077,6 +2123,93 @@ async def help_request_media(message: types.Message, state: FSMContext):
 async def help_request_media_fallback(message: types.Message, state: FSMContext):
     """معالج احتياطي لطلب المساعدة مع مرفق عندما تكون الحالة FSM مفقودة (مثلاً worker آخر)."""
     await help_request_media(message, state)
+
+
+# --- قبول/رفض محادثة الإدارة ---
+@router.callback_query(F.data.startswith("accept_chat_"))
+async def user_accept_chat(c: types.CallbackQuery, state: FSMContext):
+    try:
+        uid = int(c.data.replace("accept_chat_", "").strip())
+    except ValueError:
+        await c.answer("⚠️ خطأ.", show_alert=True)
+        return
+    if c.from_user.id != uid:
+        await c.answer("⚠️ غير مسموح.", show_alert=True)
+        return
+    admin_id = _pending_chat_requests.pop(uid, None)
+    if not admin_id:
+        await c.answer("⏱ انتهت صلاحية الطلب.", show_alert=True)
+        return
+    await state.set_state(RoomStates.chat_with_admin)
+    await state.update_data(chat_admin_id=admin_id)
+    kb_end = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔚 إنهاء المحادثة", callback_data="user_end_chat")]])
+    await c.message.edit_text("💬 تم فتح المحادثة مع الإدارة.\n\nاكتب رسالتك أو اضغط «إنهاء المحادثة» عند الانتهاء.", reply_markup=kb_end)
+    await c.answer()
+    # إبلاغ الأدمن
+    from handlers.admin import _admin_chat_started_with_user
+    await _admin_chat_started_with_user(c.bot, admin_id, uid, c.from_user.full_name or "لاعب")
+
+
+@router.callback_query(F.data.startswith("decline_chat_"))
+async def user_decline_chat(c: types.CallbackQuery, state: FSMContext):
+    try:
+        uid = int(c.data.replace("decline_chat_", "").strip())
+    except ValueError:
+        await c.answer("⚠️ خطأ.", show_alert=True)
+        return
+    if c.from_user.id != uid:
+        await c.answer("⚠️ غير مسموح.", show_alert=True)
+        return
+    admin_id = _pending_chat_requests.pop(uid, None)
+    await c.message.edit_text("تم رفض المحادثة.")
+    await c.answer()
+    if admin_id:
+        try:
+            await c.bot.send_message(admin_id, "❌ رفض اللاعب المحادثة.")
+        except Exception:
+            pass
+
+
+@router.callback_query(F.data == "user_end_chat")
+async def user_end_chat_callback(c: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    admin_id = data.get("chat_admin_id")
+    await state.clear()
+    await c.message.edit_text("تم إنهاء المحادثة.")
+    await c.answer()
+    if admin_id:
+        try:
+            from handlers.admin import _admin_chat_ended
+            await _admin_chat_ended(c.bot, admin_id, c.from_user.id)
+        except Exception:
+            pass
+
+
+@router.message(RoomStates.chat_with_admin, F.text | F.photo | F.voice | F.video | F.document)
+async def user_chat_with_admin_message(message: types.Message, state: FSMContext):
+    """إعادة توجيه رسالة اللاعب إلى الأدمن أثناء المحادثة."""
+    data = await state.get_data()
+    admin_id = data.get("chat_admin_id")
+    if not admin_id:
+        await state.clear()
+        return
+    name = message.from_user.full_name or "لاعب"
+    kb_end = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔚 إنهاء المحادثة", callback_data="admin_end_chat")]])
+    try:
+        if message.text:
+            await message.bot.send_message(admin_id, f"👤 **من اللاعب ({name}):**\n\n{message.text}", parse_mode="Markdown", reply_markup=kb_end)
+        elif message.photo:
+            await message.bot.send_photo(admin_id, message.photo[-1].file_id, caption=f"👤 من اللاعب ({name})")
+        elif message.voice:
+            await message.bot.send_voice(admin_id, message.voice.file_id, caption=f"👤 من اللاعب ({name})")
+        elif message.video:
+            await message.bot.send_video(admin_id, message.video.file_id, caption=f"👤 من اللاعب ({name})")
+        elif message.document:
+            await message.bot.send_document(admin_id, message.document.file_id, caption=f"👤 من اللاعب ({name})")
+    except Exception as e:
+        logger.warning("user_chat_with_admin_message: %s", e)
+    kb_user = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔚 إنهاء المحادثة", callback_data="user_end_chat")]])
+    await message.answer("✅ تم إرسال رسالتك.", reply_markup=kb_user)
 
 
 # --- إنشاء غرفة وإعطاء "رابط" بدل الكود ---
