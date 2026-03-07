@@ -40,19 +40,32 @@ class ReportStates(StatesGroup):
     report_confirm = State()
 
 
-# --- بدء التبليغ: اختيار من كان في الغرفة (زر "تبليغ على لاعب" فقط، ليس report_who_ ولا report_type_...) ---
-@router.callback_query(
-    F.data.startswith("report_") & ~F.data.startswith("report_who_") & ~F.data.startswith("report_type_")
-    & ~F.data.startswith("report_more_") & ~F.data.startswith("report_confirm_")
-)
+# --- بدء التبليغ: اختيار من كان في الغرفة (زر "تبليغ على لاعب" فقط) ---
+def _filter_report_start(callback: types.CallbackQuery) -> bool:
+    data = (callback.data or "").strip()
+    if not data or not data.startswith("report_"):
+        return False
+    if data.startswith("report_who_") or data.startswith("report_type_") or data.startswith("report_more_") or data.startswith("report_confirm_"):
+        return False
+    return True
+
+
+@router.callback_query(_filter_report_start)
 async def report_start(c: types.CallbackQuery, state: FSMContext):
-    replay_id = (c.data or "").replace("report_", "", 1).strip()
-    if not replay_id:
-        return await c.answer("⚠️ خطأ.", show_alert=True)
+    try:
+        data = (c.data or "").strip()
+        replay_id = data.replace("report_", "", 1).strip() if data.startswith("report_") else ""
+    except Exception:
+        replay_id = ""
+    if not replay_id or replay_id == "None":
+        return await c.answer("⚠️ خطأ أو انتهت الصلاحية.", show_alert=True)
     uid = c.from_user.id
-    players = _get_replay_players(replay_id)
+    try:
+        players = _get_replay_players(replay_id)
+    except Exception:
+        players = None
     if not players:
-        return await c.answer("⚠️ انتهت صلاحية هذه الشاشة أو لا يوجد لاعبون.", show_alert=True)
+        return await c.answer("⚠️ انتهت صلاحية هذه الشاشة أو لا يوجد لاعبون. جرّب من نهاية لعبة جديدة.", show_alert=True)
     # استبعاد نفسك والبوت
     try:
         from config import BOT_USER_ID
