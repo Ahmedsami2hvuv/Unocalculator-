@@ -1,4 +1,5 @@
 import asyncio
+import os
 import logging
 from aiogram import Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -6,7 +7,7 @@ from config import bot
 from database import init_db
 # استدعاء الراوترات مباشرة من الملفات
 from handlers.admin import router as admin_router
-from handlers.common import router as common_router
+from handlers.common import router as common_router, _get_admin_ids
 from handlers.reports import router as reports_router
 from handlers.room_2p import router as room_2p_router
 from handlers.room_multi import router as room_multi_router
@@ -43,6 +44,9 @@ async def main():
     dp.include_router(stats_router)
 
     print("🚀 البوت انطلق بنجاح والبيانات آمنة!")
+    admin_ids = _get_admin_ids()
+    help_chat = (os.getenv("HELP_CHAT_ID") or "").strip().strip('"').strip("'")
+    logging.info("ADMIN_ID(s)=%s  HELP_CHAT_ID=%s — إن كانت فارغة فلن تصل طلبات المساعدة والتبليغات للمدير.", list(admin_ids), help_chat or "(غير مضبوط)")
 
     # 4. تنظيف التحديثات المعلقة
     await bot.delete_webhook(drop_pending_updates=True)
