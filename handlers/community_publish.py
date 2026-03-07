@@ -651,12 +651,21 @@ async def community_uno_menu(c: types.CallbackQuery):
     await c.answer()
 
 
+def _post_link(post: dict):
+    """رابط المنشور في القناة (يتطلب PUBLISH_CHANNEL_USERNAME)."""
+    ch = (PUBLISH_CHANNEL_USERNAME or "").strip().lstrip("@")
+    mid = post.get("message_id")
+    if not ch or mid is None:
+        return None
+    return f"https://t.me/{ch}/{mid}"
+
+
 @router.callback_query(F.data == "my_posts_list")
 async def my_posts_list(c: types.CallbackQuery):
     uid = c.from_user.id
     try:
         posts = db_query(
-            "SELECT id, message_id, created_at, likes_count, profile_clicks_count FROM channel_posts WHERE publisher_uid = %s ORDER BY created_at DESC LIMIT 30",
+            "SELECT id, message_id, channel_id, created_at, likes_count, profile_clicks_count FROM channel_posts WHERE publisher_uid = %s ORDER BY created_at DESC LIMIT 30",
             (uid,)
         )
     except Exception:
@@ -673,21 +682,82 @@ async def my_posts_list(c: types.CallbackQuery):
         await c.answer()
         return
     lines = ["📋 **منشوراتي**\n"]
+    kb_rows = []
     for i, p in enumerate(posts, 1):
         created = p.get("created_at")
         when = created.strftime("%Y-%m-%d %H:%M") if hasattr(created, "strftime") else str(created)
         likes = p.get("likes_count") or 0
         clicks = p.get("profile_clicks_count") or 0
-        lines.append(f"{i}. 📅 {when}\n   ❤️ لايك: {likes}  |  👤 نقرات الحساب: {clicks}")
-    text = "\n".join(lines)
+        lines.append(f"{i}. 📅 {when}  |  ❤️ لايك: {likes}  |  👤 نقرات: {clicks}")
+        row_btns = []
+        link = _post_link(p)
+        if link:
+            row_btns.append(InlineKeyboardButton(text="🔗 فتح المنشور", url=link))
+        row_btns.append(InlineKeyboardButton(text="🗑 مسح منشور", callback_data=f"delete_post_confirm_{p['id']}"))
+        kb_rows.append(row_btns)
+    kb_rows.append([InlineKeyboardButton(text="🔙 رجوع", callback_data="community_uno_menu")])
+    text = "\n".join(lines) + "\n\n_اضغط «فتح المنشور» للذهاب للمنشور في القناة._"
     await c.message.edit_text(
-        text + "\n\n_الإحصائيات تُحدَّث عند كل لايك أو نقر على زر حساب اللاعب._",
+        text,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows),
+        parse_mode="Markdown"
+    )
+    await c.answer()
+
+
+@router.callback_query(F.data.startswith("delete_post_confirm_"))
+async def delete_post_confirm(c: types.CallbackQuery):
+    post_id = c.data.replace("delete_post_confirm_", "").strip()
+    if not post_id or not post_id.isdigit():
+        await c.answer("⚠️ خطأ.", show_alert=True)
+        return
+    post_id = int(post_id)
+    row = db_query("SELECT id, publisher_uid, channel_id, message_id FROM channel_posts WHERE id = %s", (post_id,))
+    if not row or row[0].get("publisher_uid") != c.from_user.id:
+        await c.answer("⚠️ لا يمكنك حذف هذا المنشور.", show_alert=True)
+        return
+    await c.message.edit_text(
+        "⚠️ **هل أنت متأكد من حذف هذا المنشور من القناة؟**\n\nسيُحذف المنشور ولا يمكن استعادته.",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🔙 رجوع", callback_data="community_uno_menu")]
+            [InlineKeyboardButton(text="✅ نعم، احذف المنشور", callback_data=f"delete_post_yes_{post_id}")],
+            [InlineKeyboardButton(text="🔙 إلغاء", callback_data="my_posts_list")]
         ]),
         parse_mode="Markdown"
     )
     await c.answer()
+
+
+@router.callback_query(F.data.startswith("delete_post_yes_"))
+async def delete_post_yes(c: types.CallbackQuery):
+    post_id = c.data.replace("delete_post_yes_", "").strip()
+    if not post_id or not post_id.isdigit():
+        await c.answer("⚠️ خطأ.", show_alert=True)
+        return
+    post_id = int(post_id)
+    uid = c.from_user.id
+    row = db_query("SELECT id, publisher_uid, channel_id, message_id FROM channel_posts WHERE id = %s", (post_id,))
+    if not row or row[0].get("publisher_uid") != uid:
+        await c.answer("⚠️ لا يمكنك حذف هذا المنشور.", show_alert=True)
+        return
+    ch_id = row[0].get("channel_id")
+    msg_id = row[0].get("message_id")
+    try:
+        if ch_id is not None and msg_id is not None:
+            await c.bot.delete_message(chat_id=ch_id, message_id=int(msg_id))
+    except Exception as e:
+        logger.warning("delete_post: delete_message failed %s", e)
+    try:
+        db_query("DELETE FROM channel_posts WHERE id = %s AND publisher_uid = %s", (post_id, uid), commit=True)
+    except Exception as e:
+        logger.warning("delete_post: db %s", e)
+    await c.message.edit_text(
+        "✅ تم حذف المنشور من القناة.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📋 منشوراتي", callback_data="my_posts_list")],
+            [InlineKeyboardButton(text="🔙 رجوع", callback_data="community_uno_menu")]
+        ])
+    )
+    await c.answer("✅ تم حذف المنشور.")
 
 
 @router.callback_query(F.data == "player_posts_channel")
@@ -728,7 +798,6 @@ async def player_post_receive_text_from_options(message: types.Message, state: F
             rdata = _get_replay_from_db(share_replay_id)
         if not rdata:
             return await message.answer("⚠️ انتهت صلاحية النشر. جرّب النشر مباشرة بعد انتهاء الجولة.")
-        summary = rdata.get("summary", "🏁 انتهت الجولة!")
         winner_id = rdata.get("winner_id")
         if winner_id is not None:
             try:
@@ -744,8 +813,15 @@ async def player_post_receive_text_from_options(message: types.Message, state: F
                     total_pts = int(pr[0].get("online_points") or 0)
             except Exception:
                 pass
-        points_line = f"\n⭐ <b>مجموع نقاطه:</b> {total_pts}" if winner_id is not None else ""
-        text_to_send = f"{_html_esc(summary)}{points_line}\n\n💬 <b>{_html_esc(w_name)}:</b> {_html_esc(text)}"
+        summary = rdata.get("summary", "")
+        round_pts_match = re.search(r"\(\+(\d+)\s*نقطة\)", summary) if summary else None
+        round_pts = int(round_pts_match.group(1)) if round_pts_match else 0
+        round_line = f"\n📊 <b>حصل على {round_pts} نقطة</b> في هذه الجولة." if round_pts else "\n📊 <b>حصل على نقاط</b> في هذه الجولة."
+        total_line = f"\n⭐ <b>نقاطه الكلية:</b> {total_pts}" if winner_id is not None else ""
+        text_to_send = (
+            f"🏆 <b>{_html_esc(w_name)}</b> لقد فاز!{round_line}{total_line}\n\n"
+            f"💬 <b>{_html_esc(w_name)}:</b> {_html_esc(text)}"
+        )
         join_code = None
         if add_play:
             try:
