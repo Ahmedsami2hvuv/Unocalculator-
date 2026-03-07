@@ -93,6 +93,12 @@ _pending_post_db_available: bool | None = None
 _channel_posts_ensured = False
 
 
+def run_publish_migration():
+    """تشغيل مرة واحدة عند بدء البوت — لضمان جدول channel_posts وأعمدة pending_post (حتى يعمل النشر حتى بعد إعادة التشغيل)."""
+    _ensure_channel_posts_table()
+    _check_pending_post_columns()
+
+
 def _ensure_channel_posts_table():
     """إنشاء جدول channel_posts إن لم يكن موجوداً (حتى تعمل «منشوراتي» دون تشغيل schema يدوياً)."""
     global _channel_posts_ensured
@@ -715,6 +721,7 @@ async def post_ready_send(c: types.CallbackQuery, state: FSMContext):
     except Exception:
         pass
     _pending_post[uid] = {"add_profile": add_profile, "add_play": add_play, "at": time.time()}
+    _last_post_options_at[uid] = time.time()
     try:
         db_query(
             "INSERT INTO users (user_id, username, is_registered) VALUES (%s, %s, FALSE) ON CONFLICT (user_id) DO NOTHING",
@@ -1258,7 +1265,7 @@ async def player_post_unsupported(message: types.Message, state: FSMContext):
 
 
 class _FilterPostFallback(BaseFilter):
-    """يمرّر فقط عندما الحالة ليست «نشر» لكن المستخدم فتح «نشر منشور» منذ دقائق."""
+    """يمرّر عندما المستخدم فتح «نشر منشور» منذ دقائق ورسالته لم تُلتقط بمعالج آخر (حالة أو pending ضاعت)."""
     async def __call__(self, *args, **kwargs) -> bool:
         message = args[0] if args else kwargs.get("event")
         data = args[1] if len(args) > 1 else kwargs.get("data", {})
@@ -1267,15 +1274,14 @@ class _FilterPostFallback(BaseFilter):
         uid = message.from_user.id if getattr(message, "from_user", None) else None
         if not uid:
             return False
+        # إن وُجدت حالة وكانت انتظار رسالة أو خيارات، نترك المعالج الآخر يتولاها — لا نسرق
         state = (data.get("state") if isinstance(data, dict) else None) or kwargs.get("state")
-        if not state:
-            return False
-        current = (await state.get_state()) or ""
-        # عدم اعتبار رسالة «طلب مساعدة» كنشر — تركها لمعالج طلب المساعدة في common
-        if "help_request" in (current or ""):
-            return False
-        if current in (PlayerPostStates.waiting_options.state, PlayerPostStates.waiting_message.state):
-            return False
+        if state:
+            current = (await state.get_state()) or ""
+            if "help_request" in (current or ""):
+                return False
+            if current in (PlayerPostStates.waiting_options.state, PlayerPostStates.waiting_message.state):
+                return False
         if _get_pending_post(uid):
             return False
         if time.time() - (_last_post_options_at.get(uid) or 0) > _LAST_POST_OPTIONS_WINDOW:
@@ -1320,48 +1326,60 @@ async def player_post_channel_missing_reply(message: types.Message):
     )
 
 
-# معالجة عندما فُقدت الحالة لكن المستخدم فتح «نشر منشور» منذ دقائق — نعالج الرسالة كنشر
+# معالجة عندما فُقدت الحالة لكن المستخدم فتح «نشر منشور» منذ دقائق — نعالج الرسالة كنشر ونتأكد من الرد دائماً
 @router.message(F.text, _FilterPostFallback())
 async def player_post_fallback_recent(message: types.Message, state: FSMContext):
     uid = message.from_user.id
-    chat_target = _normalize_channel_target()
-    if not chat_target:
-        return
-    text = (message.text or "").strip()
-    if len(text) > 4000:
-        return
-    ok, reason = check_post_content(text)
-    if not ok:
-        await message.answer(_violation_message(reason, text) + "\n\nللنشر من جديد: اضغط «تجربة نشر من جديد» أو ادخل مجتمع الأونو ← نشر منشور.", reply_markup=_violation_reply_kb())
-        return
-    await state.clear()
-    name = _get_player_name_for_post(uid, message.from_user.full_name)
-    text_to_send = _post_text_html(name, text)
-    add_profile, add_play = True, False
-    join_code = _create_deferred_2p_room(uid, name) if add_play else None
-    reply_kb = _channel_post_buttons(uid, add_profile, join_code)
-    sent_msg_id, send_err = await _send_to_channel_safe(message.bot, chat_target, text_to_send, reply_markup=reply_kb)
-    if send_err:
-        await message.answer(
-            "❌ فشل النشر (الحالة انتهت لكن حاولنا النشر).\n\n"
-            "تأكد أن البوت مسؤول في القناة وله صلاحية «نشر رسائل». جرّب: مجتمع الأونو ← نشر منشور ثم أرسل رسالتك مرة واحدة.\n\nالخطأ: " + send_err[:180]
-        )
-        return
-    if sent_msg_id is not None:
+    try:
+        chat_target = _normalize_channel_target()
+        if not chat_target:
+            await message.answer("⚠️ النشر غير متاح حالياً (القناة غير مضبوطة).")
+            return
+        text = (message.text or "").strip()
+        if len(text) > 4000:
+            await message.answer("⚠️ النص طويل جداً (حد أقصى 4000 حرف). اختصر ثم أعد المحاولة.")
+            return
+        ok, reason = check_post_content(text)
+        if not ok:
+            await message.answer(_violation_message(reason, text) + "\n\nللنشر من جديد: اضغط «تجربة نشر من جديد» أو ادخل مجتمع الأونو ← نشر منشور.", reply_markup=_violation_reply_kb())
+            return
+        await state.clear()
+        name = _get_player_name_for_post(uid, message.from_user.full_name)
+        text_to_send = _post_text_html(name, text)
+        add_profile, add_play = True, False
+        join_code = _create_deferred_2p_room(uid, name) if add_play else None
+        reply_kb = _channel_post_buttons(uid, add_profile, join_code)
+        sent_msg_id, send_err = await _send_to_channel_safe(message.bot, chat_target, text_to_send, reply_markup=reply_kb)
+        if send_err:
+            await message.answer(
+                "❌ فشل النشر (الحالة انتهت لكن حاولنا النشر).\n\n"
+                "تأكد أن البوت مسؤول في القناة وله صلاحية «نشر رسائل». جرّب: مجتمع الأونو ← نشر منشور ثم أرسل رسالتك مرة واحدة.\n\nالخطأ: " + send_err[:180]
+            )
+            return
+        if sent_msg_id is not None:
+            try:
+                post_id = _save_channel_post_and_get_id(chat_target, sent_msg_id, uid, add_profile, join_code)
+                if post_id is not None:
+                    new_kb = _channel_post_buttons(uid, add_profile, join_code, post_id=post_id, likes_count=0)
+                    if new_kb:
+                        try:
+                            await message.bot.edit_message_reply_markup(chat_id=chat_target, message_id=sent_msg_id, reply_markup=new_kb)
+                        except Exception as e:
+                            logger.warning("edit_message_reply_markup (fallback) failed: %s", e)
+            except Exception:
+                pass
+        kb_after = []
+        if PUBLISH_CHANNEL_USERNAME:
+            kb_after.append([InlineKeyboardButton(text="📢 الذهاب للقناة", url=f"https://t.me/{PUBLISH_CHANNEL_USERNAME.lstrip('@')}")])
+        kb_after.append([InlineKeyboardButton(text="🔙 رجوع للقائمة الرئيسية", callback_data="home")])
+        ch_txt = f"@{PUBLISH_CHANNEL_USERNAME.lstrip('@')}" if PUBLISH_CHANNEL_USERNAME else "القناة"
+        await message.answer("✅ تم نشر منشورك في " + ch_txt + " (تمت المعالجة تلقائياً). اضغط الزر أعلاه لمعاينة القناة.", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_after))
+    except Exception as e:
+        logger.exception("player_post_fallback_recent: uid=%s error", uid)
         try:
-            post_id = _save_channel_post_and_get_id(chat_target, sent_msg_id, uid, add_profile, join_code)
-            if post_id is not None:
-                new_kb = _channel_post_buttons(uid, add_profile, join_code, post_id=post_id, likes_count=0)
-                if new_kb:
-                    try:
-                        await message.bot.edit_message_reply_markup(chat_id=chat_target, message_id=sent_msg_id, reply_markup=new_kb)
-                    except Exception as e:
-                        logger.warning("edit_message_reply_markup (fallback) failed: %s", e)
+            await message.answer(
+                "❌ حدث خطأ أثناء النشر.\n\nجرّب: مجتمع الأونو ← نشر منشور ← اضغط «تم، أرسل رسالتك الآن» ثم أرسل رسالتك فوراً. تأكد أن البوت يعمل بنسخة واحدة فقط.",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 رجوع", callback_data="post_back")]]),
+            )
         except Exception:
             pass
-    kb_after = []
-    if PUBLISH_CHANNEL_USERNAME:
-        kb_after.append([InlineKeyboardButton(text="📢 الذهاب للقناة", url=f"https://t.me/{PUBLISH_CHANNEL_USERNAME.lstrip('@')}")])
-    kb_after.append([InlineKeyboardButton(text="🔙 رجوع للقائمة الرئيسية", callback_data="home")])
-    ch_txt = f"@{PUBLISH_CHANNEL_USERNAME.lstrip('@')}" if PUBLISH_CHANNEL_USERNAME else "القناة"
-    await message.answer("✅ تم نشر منشورك في " + ch_txt + " (تمت المعالجة تلقائياً). اضغط الزر أعلاه لمعاينة القناة.", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_after))
