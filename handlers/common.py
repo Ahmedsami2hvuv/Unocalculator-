@@ -1759,15 +1759,21 @@ async def my_reports_list(c: types.CallbackQuery):
 
 
 def _get_admin_ids():
-    """جلب قائمة معرفات الأدمن من متغيرات البيئة (ADMIN_ID أو ADMIN_IDS)."""
+    """جلب قائمة معرفات الأدمن من متغيرات البيئة (ADMIN_ID أو ADMIN_IDS).
+    يدعم: 123456789 أو \"123456789\" أو 111,222,333
+    ملاحظة: المدير يجب أن يكون قد ضغط /start على البوت مرة واحدة حتى يستطيع البوت إرسال رسائل له."""
     ids = set()
     for key in ("ADMIN_ID", "ADMIN_IDS", "ADMIN_TELEGRAM_ID"):
-        raw = os.getenv(key, "").strip()
-        if raw:
-            for x in raw.split(","):
-                x = x.strip()
-                if x.isdigit():
-                    ids.add(int(x))
+        raw = os.getenv(key, "")
+        if raw is None:
+            continue
+        raw = str(raw).strip().strip('"').strip("'").strip()
+        if not raw:
+            continue
+        for x in raw.split(","):
+            x = str(x).strip().strip('"').strip("'")
+            if x.isdigit():
+                ids.add(int(x))
     return ids
 
 
@@ -1873,23 +1879,36 @@ async def help_request_text(message: types.Message, state: FSMContext):
     except Exception:
         pass
     sent_any = False
-    if not admin_ids:
-        logger.warning("help_request: لا يوجد ADMIN_ID أو ADMIN_IDS في متغيرات البيئة — لم يُرسل طلب المساعدة لأي مدير.")
+    help_chat_id = os.getenv("HELP_CHAT_ID", "").strip().strip('"').strip("'")
+    if not admin_ids and not help_chat_id:
+        logger.warning("help_request: لا يوجد ADMIN_ID ولا HELP_CHAT_ID — ضع ADMIN_ID (رقم تليجرام) أو HELP_CHAT_ID (معرف قناة/مجموعة) في Variables.")
     else:
-        logger.info("help_request: إرسال إلى الأدمن: %s", list(admin_ids))
+        logger.info("help_request: إرسال إلى الأدمن: %s، HELP_CHAT_ID: %s", list(admin_ids), help_chat_id or "—")
     msg_body = file_text.replace("`", "'")[:3800]
     if len(file_text) > 3800:
         msg_body += "\n\n...(مختصر)"
+    full_msg = "🆘 **طلب مساعدة**\n\n" + msg_body
     for aid in admin_ids:
         try:
-            await message.bot.send_message(aid, "🆘 **طلب مساعدة**\n\n" + msg_body, parse_mode="Markdown")
+            await message.bot.send_message(aid, full_msg, parse_mode="Markdown")
             sent_any = True
         except Exception as e1:
             try:
                 await message.bot.send_message(aid, "🆘 طلب مساعدة\n\n" + msg_body.replace("*", "").replace("_", ""))
                 sent_any = True
             except Exception as e2:
-                logger.warning("help_request: send to admin %s failed: %s then %s", aid, e1, e2)
+                logger.warning("help_request: send to admin %s failed: %s then %s (المدير يجب أن يضغط /start على البوت أولاً)", aid, e1, e2)
+    if help_chat_id:
+        try:
+            ch_id = int(help_chat_id) if help_chat_id.lstrip("-").isdigit() else help_chat_id
+            await message.bot.send_message(ch_id, full_msg, parse_mode="Markdown")
+            sent_any = True
+        except Exception as e1:
+            try:
+                await message.bot.send_message(ch_id, "🆘 طلب مساعدة\n\n" + msg_body.replace("*", "").replace("_", ""))
+                sent_any = True
+            except Exception as e2:
+                logger.warning("help_request: send to HELP_CHAT_ID %s failed: %s then %s", help_chat_id, e1, e2)
     await state.clear()
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 رجوع", callback_data="my_account")]])
     await message.answer("✅ تم إرسال طلب المساعدة للإدارة. سنتواصل معك قريباً.", reply_markup=kb)
@@ -1916,10 +1935,11 @@ async def help_request_media(message: types.Message, state: FSMContext):
         )
     except Exception:
         pass
-    if not admin_ids:
-        logger.warning("help_request_media: لا يوجد ADMIN_ID — لم يُرسل لأي مدير.")
+    help_chat_id = os.getenv("HELP_CHAT_ID", "").strip().strip('"').strip("'")
+    if not admin_ids and not help_chat_id:
+        logger.warning("help_request_media: لا يوجد ADMIN_ID ولا HELP_CHAT_ID.")
     else:
-        logger.info("help_request_media: إرسال إلى الأدمن: %s", list(admin_ids))
+        logger.info("help_request_media: إرسال إلى الأدمن: %s، HELP_CHAT_ID: %s", list(admin_ids), help_chat_id or "—")
     msg_body = file_text.replace("`", "'")[:3800]
     if len(file_text) > 3800:
         msg_body += "\n\n...(مختصر)"
@@ -1948,6 +1968,20 @@ async def help_request_media(message: types.Message, state: FSMContext):
                     await message.bot.send_document(aid, message.document.file_id, caption=caption_long[:1000])
             except Exception as e2:
                 logger.warning("help_request_media: send to admin %s failed: %s then %s", aid, e, e2)
+    if help_chat_id:
+        try:
+            ch_id = int(help_chat_id) if help_chat_id.lstrip("-").isdigit() else help_chat_id
+            await message.bot.send_message(ch_id, "🆘 **طلب مساعدة**\n\n" + msg_body, parse_mode="Markdown")
+            if message.photo:
+                await message.bot.send_photo(ch_id, message.photo[-1].file_id, caption=caption_long[:1000])
+            elif message.voice:
+                await message.bot.send_voice(ch_id, message.voice.file_id, caption=caption_long[:1000])
+            elif message.video:
+                await message.bot.send_video(ch_id, message.video.file_id, caption=caption_long[:1000])
+            elif message.document:
+                await message.bot.send_document(ch_id, message.document.file_id, caption=caption_long[:1000])
+        except Exception as e:
+            logger.warning("help_request_media: send to HELP_CHAT_ID %s failed: %s", help_chat_id, e)
     await state.clear()
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 رجوع", callback_data="my_account")]])
     await message.answer("✅ تم إرسال طلب المساعدة للإدارة.", reply_markup=kb)
