@@ -97,6 +97,11 @@ def run_publish_migration():
     """تشغيل مرة واحدة عند بدء البوت — لضمان جدول channel_posts وأعمدة pending_post (حتى يعمل النشر حتى بعد إعادة التشغيل)."""
     _ensure_channel_posts_table()
     _check_pending_post_columns()
+    ch = _normalize_channel_target()
+    if ch:
+        logger.info("📢 قناة النشر: %s (إن لم ينشر البوت في القناة، تأكد أن البوت مضاف كمسؤول ولديه صلاحية «نشر رسائل»)", ch)
+    else:
+        logger.warning("📢 قناة النشر غير مضبوطة — اضبط PUBLISH_CHANNEL_ID أو PUBLISH_CHANNEL_USERNAME")
 
 
 def _ensure_channel_posts_table():
@@ -361,7 +366,14 @@ async def player_post_receive_text_pending(message: types.Message, state: FSMCon
         add_play = opts.get("add_play", False)
         chat_target = _normalize_channel_target()
         if not chat_target:
-            await message.answer("⚠️ نشر المنشورات غير متاح حالياً.\n\nتحقق من إعدادات القناة في handlers/channel_config.py.")
+            logger.warning("player_post_receive_text_pending: لا توجد قناة — PUBLISH_CHANNEL_ID و PUBLISH_CHANNEL_USERNAME غير مضبوطين")
+            await message.answer(
+                "⚠️ نشر المنشورات غير متاح حالياً.\n\n"
+                "اضبط القناة في Railway (Variables):\n"
+                "• PUBLISH_CHANNEL_ID = معرف القناة الرقمي (سالب، مثل -1001234567890)\n"
+                "• PUBLISH_CHANNEL_USERNAME = يوزر القناة بدون @\n\n"
+                "أو في الملف handlers/channel_config.py"
+            )
             return
         text = (message.text or "").strip()
         ok, reason = check_post_content(text)
@@ -378,14 +390,14 @@ async def player_post_receive_text_pending(message: types.Message, state: FSMCon
                 logger.warning("player_post: create_room: %s", e)
         reply_kb = _channel_post_buttons(uid, add_profile, join_code)
         sent_msg_id = None
-        logger.info("player_post: sending text to channel chat_id=%s (pending)", chat_target)
+        logger.info("player_post: إرسال نص إلى القناة ch=%s uid=%s", chat_target, uid)
         sent_msg_id, err = await _send_to_channel_safe(message.bot, chat_target, text_to_send, reply_markup=reply_kb)
         if err:
             await message.answer(
-                "❌ فشل النشر.\n\n"
-                "• تأكد أن البوت **مضاف في القناة كمسؤول** وله صلاحية «نشر رسائل».\n"
-                "• تأكد أن معرف القناة صحيح (PUBLISH_CHANNEL_ID أو يوزر القناة).\n\n"
-                "الخطأ: " + err[:180]
+                "❌ فشل النشر في القناة.\n\n"
+                "• أضف البوت في القناة كـ **مسؤول (Admin)** وامنحه صلاحية **«Post messages» / «نشر رسائل»**.\n"
+                "• تأكد أن معرف القناة صحيح في Variables أو channel_config.py (PUBLISH_CHANNEL_ID سالب مثل -1001234567890).\n\n"
+                "خطأ تيليجرام: " + str(err)[:250]
             )
             return
         if sent_msg_id is not None:
@@ -540,14 +552,17 @@ def _save_channel_post_and_get_id(channel_id, message_id, publisher_uid, add_pro
 
 async def _send_to_channel_safe(bot, ch, text_html: str, reply_markup=None, **send_kw):
     """إرسال نص إلى القناة بتنسيق HTML مع إعادة محاولة بدون تنسيق عند الفشل."""
+    logger.info("publish: إرسال إلى القناة ch=%s (نص %s حرف)", ch, len(text_html or ""))
     kwargs = {"parse_mode": "HTML", **send_kw}
     if reply_markup is not None:
         kwargs["reply_markup"] = reply_markup
     try:
         sent = await bot.send_message(ch, text_html, **kwargs)
+        logger.info("publish: تم النشر في القناة message_id=%s", sent.message_id)
         return sent.message_id, None
     except Exception as e1:
-        logger.warning("send_message HTML failed, retrying without parse_mode: %s", e1)
+        err1 = str(e1).replace("'", "").strip()[:300]
+        logger.warning("publish: فشل الإرسال (HTML) ch=%s: %s", ch, err1)
         try:
             plain = text_html.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
             plain = re.sub(r"<b>(.*?)</b>", r"\1", plain)
@@ -555,9 +570,12 @@ async def _send_to_channel_safe(bot, ch, text_html: str, reply_markup=None, **se
             if reply_markup is not None:
                 retry_kw["reply_markup"] = reply_markup
             sent = await bot.send_message(ch, plain, **retry_kw)
+            logger.info("publish: تم النشر (بدون HTML) message_id=%s", sent.message_id)
             return sent.message_id, None
         except Exception as e2:
-            return None, str(e2).replace("'", "").strip()[:220]
+            err2 = str(e2).replace("'", "").strip()[:300]
+            logger.error("publish: فشل الإرسال نهائياً ch=%s: %s", ch, err2)
+            return None, err2[:220]
 
 
 async def _publish_media_to_channel(bot, message: types.Message, name: str, channel_id=None, reply_markup=None):
