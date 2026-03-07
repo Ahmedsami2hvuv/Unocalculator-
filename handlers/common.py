@@ -632,14 +632,14 @@ class RoomStates(StatesGroup):
 # مجتمع الأونو والنشر: تم نقله إلى handlers/community_publish.py
 
 persistent_kb = ReplyKeyboardMarkup(
-    keyboard=[[KeyboardButton(text="ستارت"), KeyboardButton(text="🧹 تنظيف الرسائل")]],
+    keyboard=[[KeyboardButton(text="🏠 القائمة الرئيسية"), KeyboardButton(text="🧹 تنظيف الرسائل")]],
     resize_keyboard=True,
     persistent=True
 )
 
 
 async def _clean_then_show_menu(message: types.Message):
-    """مسح رسائل البوت في المحادثة ثم عرض القائمة. يستخدمه زرّا ستارت وتنظيف الرسائل."""
+    """مسح رسائل البوت في المحادثة ثم عرض القائمة. يستخدمه زرّا القائمة الرئيسية وتنظيف الرسائل."""
     chat_id = message.chat.id
     current_msg_id = message.message_id
     for mid in range(current_msg_id, max(current_msg_id - 200, 0), -1):
@@ -660,9 +660,9 @@ async def clean_chat_messages(message: types.Message):
     await _clean_then_show_menu(message)
 
 
-@router.message(F.text == "ستارت")
-async def start_button(message: types.Message):
-    """زر ستارت: نفس عمل زر تنظيف الرسائل (مسح الرسائل ثم القائمة)."""
+@router.message(F.text == "🏠 القائمة الرئيسية")
+async def main_menu_button(message: types.Message):
+    """زر القائمة الرئيسية: عرض القائمة الرئيسية (نفس استدعاء القائمة)."""
     await _clean_then_show_menu(message)
 
 
@@ -2175,7 +2175,8 @@ async def user_end_chat_callback(c: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
     admin_id = data.get("chat_admin_id")
     await state.clear()
-    await c.message.edit_text("تم إنهاء المحادثة.")
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 رجوع", callback_data="my_account")]])
+    await c.message.edit_text("تم إنهاء المحادثة.", reply_markup=kb)
     await c.answer()
     if admin_id:
         try:
@@ -2904,7 +2905,7 @@ async def show_main_menu(message, name, user_id, cleanup=False, state=None, from
     else:
         await _cleanup_last_messages(message, limit=15)
         await message.answer(msg_text, reply_markup=markup)
-        # إظهار أزرار ستارت وتنظيف الرسائل دائماً تحت القائمة عند الدخول من /start أو تنظيف
+        # إظهار أزرار القائمة الرئيسية وتنظيف الرسائل دائماً تحت القائمة عند الدخول من /start أو تنظيف
         try:
             await message.answer("—", reply_markup=persistent_kb)
         except Exception:
