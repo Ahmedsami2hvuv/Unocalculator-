@@ -44,6 +44,7 @@ class AdminStates(StatesGroup):
     edit_user_field = State()
     edit_user_value = State()
     report_reply_to_reporter = State()
+    admin_chat_with_user = State()  # محادثة مع لاعب (بعد قبوله)
 
 
 # --- /admin وزر القائمة الرئيسية ---
@@ -250,6 +251,100 @@ async def admin_back(c: types.CallbackQuery, state: FSMContext):
     await state.clear()
     await _send_admin_menu(c.message, c.from_user.id)
     await c.answer()
+
+
+@router.callback_query(F.data.startswith("admin_chat_request_"))
+async def admin_chat_request_user(c: types.CallbackQuery, state: FSMContext):
+    if not _admin_only(c):
+        return await c.answer("⛔ غير مسموح.", show_alert=True)
+    try:
+        uid = int(c.data.replace("admin_chat_request_", "").strip())
+    except ValueError:
+        return await c.answer("⚠️ خطأ.", show_alert=True)
+    from handlers.common import _pending_chat_requests
+    _pending_chat_requests[uid] = c.from_user.id
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ قبول", callback_data=f"accept_chat_{uid}"), InlineKeyboardButton(text="❌ رفض", callback_data=f"decline_chat_{uid}")],
+    ])
+    try:
+        await c.bot.send_message(uid, "💬 **الإدارة تريد التحدث معك.**\n\nهل تقبل فتح محادثة؟ (يمكن إنهاؤها من قبل أي طرف)", reply_markup=kb, parse_mode="Markdown")
+        await c.answer("تم إرسال طلب المحادثة للاعب.")
+    except Exception as e:
+        _pending_chat_requests.pop(uid, None)
+        await c.answer(f"فشل الإرسال للاعب: {e}", show_alert=True)
+
+
+async def _admin_chat_started_with_user(bot, admin_id: int, user_id: int, user_name: str):
+    """استدعاء من common عند قبول اللاعب للمحادثة — نرسل للأدمن زراً لبدء المحادثة."""
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💬 بدء المحادثة مع اللاعب", callback_data=f"admin_start_chat_{user_id}")]])
+    await bot.send_message(admin_id, f"✅ قبل اللاعب **{user_name}** المحادثة.\n\nاضغط الزر أدناه لبدء المحادثة وكتابة رسالتك.", parse_mode="Markdown", reply_markup=kb)
+
+
+@router.callback_query(F.data.startswith("admin_start_chat_"))
+async def admin_start_chat_click(c: types.CallbackQuery, state: FSMContext):
+    if not _admin_only(c):
+        return
+    try:
+        user_id = int(c.data.replace("admin_start_chat_", "").strip())
+    except ValueError:
+        return await c.answer("⚠️ خطأ.", show_alert=True)
+    await state.set_state(AdminStates.admin_chat_with_user)
+    await state.update_data(admin_chat_with_uid=user_id)
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔚 إنهاء المحادثة", callback_data="admin_end_chat")]])
+    await c.message.edit_text("💬 المحادثة مفتوحة مع اللاعب.\n\nاكتب رسالتك أو اضغط «إنهاء المحادثة».", reply_markup=kb)
+    await c.answer()
+
+
+async def _admin_chat_ended(bot, admin_id: int, user_id: int):
+    """استدعاء عند إنهاء اللاعب للمحادثة."""
+    try:
+        await bot.send_message(admin_id, "🔚 أنهى اللاعب المحادثة.")
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data == "admin_end_chat")
+async def admin_end_chat_callback(c: types.CallbackQuery, state: FSMContext):
+    if not _admin_only(c):
+        return
+    data = await state.get_data()
+    user_id = data.get("admin_chat_with_uid")
+    await state.clear()
+    await c.message.edit_text("تم إنهاء المحادثة.")
+    await c.answer()
+    if user_id:
+        try:
+            await c.bot.send_message(user_id, "🔚 أنهت الإدارة المحادثة.")
+        except Exception:
+            pass
+
+
+@router.message(AdminStates.admin_chat_with_user, F.text | F.photo | F.voice | F.video | F.document)
+async def admin_chat_send_to_user(message: types.Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    data = await state.get_data()
+    user_id = data.get("admin_chat_with_uid")
+    if not user_id:
+        await state.clear()
+        return
+    admin_name = message.from_user.full_name or "الإدارة"
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔚 إنهاء المحادثة", callback_data="admin_end_chat")]])
+    try:
+        if message.text:
+            await message.bot.send_message(user_id, f"👤 **من الإدارة ({admin_name}):**\n\n{message.text}", parse_mode="Markdown")
+        elif message.photo:
+            await message.bot.send_photo(user_id, message.photo[-1].file_id, caption=f"👤 من الإدارة ({admin_name})")
+        elif message.voice:
+            await message.bot.send_voice(user_id, message.voice.file_id, caption=f"👤 من الإدارة ({admin_name})")
+        elif message.video:
+            await message.bot.send_video(user_id, message.video.file_id, caption=f"👤 من الإدارة ({admin_name})")
+        elif message.document:
+            await message.bot.send_document(user_id, message.document.file_id, caption=f"👤 من الإدارة ({admin_name})")
+    except Exception as e:
+        await message.answer(f"فشل الإرسال: {e}")
+        return
+    await message.answer("✅ تم إرسال رسالتك.", reply_markup=kb)
 
 
 @router.callback_query(F.data == "admin_help_requests")
