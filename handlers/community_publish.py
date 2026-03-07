@@ -342,7 +342,7 @@ async def player_post_receive_text_pending(message: types.Message, state: FSMCon
     text = (message.text or "").strip()
     ok, reason = check_post_content(text)
     if not ok:
-        await message.answer(f"⛔ {reason}")
+        await message.answer(f"⛔ {reason}", reply_markup=_violation_reply_kb())
         return
     name = _get_player_name_for_post(uid, message.from_user.full_name)
     text_to_send = _post_text_html(name, text)
@@ -409,7 +409,7 @@ async def player_post_receive_media_pending(message: types.Message, state: FSMCo
     if caption_text:
         ok, reason = check_post_content(caption_text)
         if not ok:
-            await message.answer(f"⛔ {reason}")
+            await message.answer(f"⛔ {reason}", reply_markup=_violation_reply_kb())
             return
     name = _get_player_name_for_post(uid, message.from_user.full_name)
     join_code = None
@@ -683,8 +683,41 @@ async def post_ready_send(c: types.CallbackQuery, state: FSMContext):
     _set_pending_post_db(uid, add_profile, add_play)
     await state.set_state(PlayerPostStates.waiting_message)
     await c.message.edit_text(
-        "📢 أرسل الآن النص أو الصور أو الصوت أو الفيديو أو الملصقات أو أي ميديا للنشر في القناة.\n\n⚠️ لا يُسمح بنشر أرقام هواتف أو كلمات تخالف المعايير."
+        "📢 أرسل الآن النص أو الصور أو الصوت أو الفيديو أو الملصقات أو أي ميديا للنشر في القناة.\n\n⚠️ لا يُسمح بنشر أرقام هواتف أو كلمات تخالف المعايير.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔙 رجوع", callback_data="post_back")],
+        ]),
     )
+
+
+def _violation_reply_kb():
+    """زر تحت رسالة «رسالتك تنتهك معاييرنا»: تجربة نشر من جديد."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔄 تجربة نشر من جديد", callback_data="post_retry_publish")],
+    ])
+
+
+@router.callback_query(F.data == "post_retry_publish")
+async def post_retry_publish(c: types.CallbackQuery, state: FSMContext):
+    """بعد رفض المنشور: إعادة عرض شاشة «أرسل الآن النص...» مع زر رجوع."""
+    uid = c.from_user.id
+    opts = _get_pending_post(uid)
+    if not opts:
+        await state.clear()
+        await c.message.edit_text(
+            "⏱ انتهت مهلة النشر.\n\nادخل من: مجتمع الأونو ← نشر منشور.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 رجوع", callback_data="post_back")]]),
+        )
+        return await c.answer()
+    _set_pending_post_db(uid, opts.get("add_profile", True), opts.get("add_play", False))
+    await state.set_state(PlayerPostStates.waiting_message)
+    await c.message.edit_text(
+        "📢 أرسل الآن النص أو الصور أو الصوت أو الفيديو أو الملصقات أو أي ميديا للنشر في القناة.\n\n⚠️ لا يُسمح بنشر أرقام هواتف أو كلمات تخالف المعايير.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔙 رجوع", callback_data="post_back")],
+        ]),
+    )
+    await c.answer("أرسل رسالتك من جديد.")
 
 
 @router.callback_query(F.data == "post_back")
@@ -893,7 +926,7 @@ async def player_post_receive_text_from_options(message: types.Message, state: F
     text = (message.text or "").strip()
     ok, reason = check_post_content(text)
     if not ok:
-        return await message.answer(f"⛔ {reason}\n\nيمكنك إرسال رسالة أخرى الآن (نص أو صورة).")
+        return await message.answer(f"⛔ {reason}\n\nيمكنك إرسال رسالة أخرى الآن (نص أو صورة).", reply_markup=_violation_reply_kb())
     await state.clear()
     if share_replay_id:
         rdata = replay_data.get(share_replay_id)
@@ -1016,7 +1049,7 @@ async def player_post_receive_media_from_options(message: types.Message, state: 
     if caption_text:
         ok, reason = check_post_content(caption_text)
         if not ok:
-            return await message.answer(f"⛔ {reason}")
+            return await message.answer(f"⛔ {reason}", reply_markup=_violation_reply_kb())
     name = _get_player_name_for_post(uid, message.from_user.full_name)
     join_code = _create_deferred_2p_room(uid, name) if add_play else None
     reply_kb = _channel_post_buttons(uid, add_profile, join_code)
@@ -1067,7 +1100,7 @@ async def player_post_receive_text(message: types.Message, state: FSMContext):
     text = (message.text or "").strip()
     ok, reason = check_post_content(text)
     if not ok:
-        return await message.answer(f"⛔ {reason}")
+        return await message.answer(f"⛔ {reason}", reply_markup=_violation_reply_kb())
     name = _get_player_name_for_post(uid, message.from_user.full_name)
     text_to_send = _post_text_html(name, text)
     join_code = None
@@ -1119,7 +1152,7 @@ async def player_post_receive_media(message: types.Message, state: FSMContext):
     if caption_text:
         ok, reason = check_post_content(caption_text)
         if not ok:
-            return await message.answer(f"⛔ {reason}")
+            return await message.answer(f"⛔ {reason}", reply_markup=_violation_reply_kb())
     name = _get_player_name_for_post(uid, message.from_user.full_name)
     join_code = None
     if add_play:
@@ -1237,7 +1270,7 @@ async def player_post_fallback_recent(message: types.Message, state: FSMContext)
         return
     ok, reason = check_post_content(text)
     if not ok:
-        await message.answer(f"⛔ {reason}\n\nللنشر من جديد: مجتمع الأونو ← نشر منشور.")
+        await message.answer(f"⛔ {reason}\n\nللنشر من جديد: مجتمع الأونو ← نشر منشور.", reply_markup=_violation_reply_kb())
         return
     await state.clear()
     name = _get_player_name_for_post(uid, message.from_user.full_name)
