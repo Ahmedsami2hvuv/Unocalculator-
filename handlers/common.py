@@ -1888,11 +1888,11 @@ def _build_user_file_text(uid: int, from_user: types.User) -> str:
 
 
 def _help_request_admin_kb(uid: int) -> InlineKeyboardMarkup:
-    """أزرار تحت رسالة طلب المساعدة عند الإدارة: المساعدات، القائمة، طلب محادثة."""
+    """أزرار تحت رسالة طلب المساعدة عند الإدارة: المساعدات، القائمة، طلب دردشة."""
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📋 الذهاب لطلبات المساعدة", callback_data="admin_help_requests")],
         [InlineKeyboardButton(text="🏠 القائمة الرئيسية", callback_data="admin_back")],
-        [InlineKeyboardButton(text="💬 طلب محادثة مع اللاعب", callback_data=f"admin_chat_request_{uid}")],
+        [InlineKeyboardButton(text="💬 طلب دردشة", callback_data=f"admin_chat_request_{uid}")],
     ])
 
 
