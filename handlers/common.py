@@ -666,7 +666,7 @@ async def start_button(message: types.Message):
 
 
 class FilterInRoom(BaseFilter):
-    """يمرّر فقط إذا كان المرسل داخل غرفة (انتظار أو لعب). لا يمرّر إذا كان في وضع نشر منشور (حتى تصل الرسالة لمعالج النشر)."""
+    """يمرّر فقط إذا كان المرسل داخل غرفة (انتظار أو لعب). لا يمرّر إذا كان في وضع نشر منشور أو تبليغ أو طلب مساعدة."""
     async def __call__(self, *args, **kwargs) -> bool:
         event = args[0] if args else kwargs.get("event")
         data = args[1] if len(args) > 1 else kwargs.get("data", {})
@@ -678,11 +678,19 @@ class FilterInRoom(BaseFilter):
         state = data.get("state")
         if state is not None:
             try:
-                s = await state.get_state()
-                if s and ("waiting_message" in (s or "") or "waiting_options" in (s or "")):
+                s = await state.get_state() or ""
+                # عدم أخذ الرسالة كـ «محادثة غرفة» إذا المستخدم في وضع آخر
+                if "waiting_message" in s or "waiting_options" in s:
+                    return False
+                if "report_upload" in s or "report_more" in s or "report_confirm" in s:
+                    return False
+                if "help_request" in s:
                     return False
             except Exception:
                 pass
+        # حتى لو FSM ضاعت (مثلاً worker آخر): إذا لديه طلب مساعدة معلّق فلا نأخذ رسالته للغرفة
+        if _has_pending_help_request(user_id):
+            return False
         return get_user_current_room(user_id) is not None
 
 
