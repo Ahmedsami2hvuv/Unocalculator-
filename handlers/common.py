@@ -1892,8 +1892,8 @@ def _clear_pending_help_request(uid: int):
 
 class _FilterPendingHelpRequest(BaseFilter):
     """يمرّر عندما المستخدم لديه طلب مساعدة معلّق في DB (وليس في حالة FSM) — ليعمل مع عدة workers."""
-    async def __call__(self, event: types.Message, data: dict) -> bool:
-        state = data.get("state")
+    async def __call__(self, event: types.Message, **kwargs) -> bool:
+        state = kwargs.get("state")
         if state:
             current = await state.get_state()
             if current == "RoomStates:help_request":
