@@ -3591,20 +3591,44 @@ async def show_leaderboard(c: types.CallbackQuery):
 def _is_user_blocked(blocker_id: int, blocked_id: int) -> bool:
     """هل blocker_id حظر blocked_id؟"""
     try:
+        _ensure_user_blocks_table()
         r = db_query("SELECT 1 FROM user_blocks WHERE blocker_id = %s AND blocked_id = %s", (blocker_id, blocked_id))
         return bool(r)
     except Exception:
         return False
 
+def _ensure_user_blocks_table():
+    """التأكد من وجود جدول user_blocks (يُنشأ عند أول حظر إن لم يكن موجوداً)."""
+    try:
+        db_query(
+            """CREATE TABLE IF NOT EXISTS user_blocks (
+                blocker_id BIGINT NOT NULL,
+                blocked_id BIGINT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (blocker_id, blocked_id)
+            )""",
+            commit=True
+        )
+    except Exception:
+        pass
+
+
 def _block_user(blocker_id: int, blocked_id: int) -> bool:
     try:
+        _ensure_user_blocks_table()
         db_query("INSERT INTO user_blocks (blocker_id, blocked_id) VALUES (%s, %s)", (blocker_id, blocked_id), commit=True)
         return True
     except Exception:
-        return False
+        try:
+            _ensure_user_blocks_table()
+            db_query("INSERT INTO user_blocks (blocker_id, blocked_id) VALUES (%s, %s)", (blocker_id, blocked_id), commit=True)
+            return True
+        except Exception:
+            return False
 
 def _unblock_user(blocker_id: int, blocked_id: int):
     try:
+        _ensure_user_blocks_table()
         db_query("DELETE FROM user_blocks WHERE blocker_id = %s AND blocked_id = %s", (blocker_id, blocked_id), commit=True)
     except Exception:
         pass
