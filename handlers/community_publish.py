@@ -321,9 +321,10 @@ async def player_post_receive_text_pending(message: types.Message, state: FSMCon
             join_code = _create_deferred_2p_room(uid, name)
         except Exception as e:
             logger.warning("player_post: create_room: %s", e)
+    reply_kb = _channel_post_buttons(uid, add_profile, join_code)
     sent_msg_id = None
     logger.info("player_post: sending text to channel chat_id=%s (pending)", chat_target)
-    sent_msg_id, err = await _send_to_channel_safe(message.bot, chat_target, text_to_send, reply_markup=None)
+    sent_msg_id, err = await _send_to_channel_safe(message.bot, chat_target, text_to_send, reply_markup=reply_kb)
     if err:
         await message.answer(
             "❌ فشل النشر.\n\n"
@@ -390,7 +391,10 @@ async def player_post_receive_media_pending(message: types.Message, state: FSMCo
             join_code = _create_deferred_2p_room(uid, name)
         except Exception:
             pass
-    ok, sent_msg_id, err = await _publish_media_to_channel(message.bot, message, name, reply_markup=None)
+    reply_kb = _channel_post_buttons(uid, add_profile, join_code)
+    ok, sent_msg_id, err = await _publish_media_to_channel(message.bot, message, name, reply_markup=reply_kb)
+    if not ok and reply_kb:
+        ok, sent_msg_id, err = await _publish_media_to_channel(message.bot, message, name, reply_markup=None)
     if ok and sent_msg_id is not None:
         try:
             row = db_query(
@@ -878,7 +882,8 @@ async def player_post_receive_text_from_options(message: types.Message, state: F
                 join_code = _create_deferred_2p_room(winner_id, w_name)
             except Exception:
                 pass
-        sent_mid, send_err = await _send_to_channel_safe(message.bot, chat_target, text_to_send, reply_markup=None)
+        reply_kb = _channel_post_buttons(winner_id, add_profile, join_code)
+        sent_mid, send_err = await _send_to_channel_safe(message.bot, chat_target, text_to_send, reply_markup=reply_kb)
         if send_err or not sent_mid:
             logger.warning("share_result: publish to channel failed: %s", send_err)
             err = (send_err or "فشل الإرسال")[:220]
@@ -915,7 +920,8 @@ async def player_post_receive_text_from_options(message: types.Message, state: F
     name = _get_player_name_for_post(uid, message.from_user.full_name)
     text_to_send = _post_text_html(name, text)
     join_code = _create_deferred_2p_room(uid, name) if add_play else None
-    sent_msg_id, send_err = await _send_to_channel_safe(message.bot, chat_target, text_to_send, reply_markup=None)
+    reply_kb = _channel_post_buttons(uid, add_profile, join_code)
+    sent_msg_id, send_err = await _send_to_channel_safe(message.bot, chat_target, text_to_send, reply_markup=reply_kb)
     if send_err:
         await state.set_state(PlayerPostStates.waiting_options)
         await state.update_data(post_add_profile=add_profile, post_add_play=add_play)
@@ -972,7 +978,10 @@ async def player_post_receive_media_from_options(message: types.Message, state: 
             return await message.answer(f"⛔ {reason}")
     name = _get_player_name_for_post(uid, message.from_user.full_name)
     join_code = _create_deferred_2p_room(uid, name) if add_play else None
-    ok, sent_msg_id, err = await _publish_media_to_channel(message.bot, message, name, reply_markup=None)
+    reply_kb = _channel_post_buttons(uid, add_profile, join_code)
+    ok, sent_msg_id, err = await _publish_media_to_channel(message.bot, message, name, reply_markup=reply_kb)
+    if not ok and reply_kb:
+        ok, sent_msg_id, err = await _publish_media_to_channel(message.bot, message, name, reply_markup=None)
     if ok and sent_msg_id is not None:
         try:
             row = db_query(
@@ -1030,7 +1039,8 @@ async def player_post_receive_text(message: types.Message, state: FSMContext):
             join_code = _create_deferred_2p_room(uid, name)
         except Exception as e:
             logger.warning("player_post: create_room: %s", e)
-    sent_msg_id, send_err = await _send_to_channel_safe(message.bot, chat_target, text_to_send, reply_markup=None)
+    reply_kb = _channel_post_buttons(uid, add_profile, join_code)
+    sent_msg_id, send_err = await _send_to_channel_safe(message.bot, chat_target, text_to_send, reply_markup=reply_kb)
     if send_err:
         await message.answer(
             "❌ فشل النشر في القناة.\n\n"
@@ -1084,7 +1094,10 @@ async def player_post_receive_media(message: types.Message, state: FSMContext):
             join_code = _create_deferred_2p_room(uid, name)
         except Exception:
             pass
-    ok, sent_msg_id, err = await _publish_media_to_channel(message.bot, message, name, reply_markup=None)
+    reply_kb = _channel_post_buttons(uid, add_profile, join_code)
+    ok, sent_msg_id, err = await _publish_media_to_channel(message.bot, message, name, reply_markup=reply_kb)
+    if not ok and reply_kb:
+        ok, sent_msg_id, err = await _publish_media_to_channel(message.bot, message, name, reply_markup=None)
     if ok and sent_msg_id is not None:
         try:
             row = db_query(
@@ -1194,7 +1207,8 @@ async def player_post_fallback_recent(message: types.Message, state: FSMContext)
     text_to_send = _post_text_html(name, text)
     add_profile, add_play = True, False
     join_code = _create_deferred_2p_room(uid, name) if add_play else None
-    sent_msg_id, send_err = await _send_to_channel_safe(message.bot, chat_target, text_to_send, reply_markup=None)
+    reply_kb = _channel_post_buttons(uid, add_profile, join_code)
+    sent_msg_id, send_err = await _send_to_channel_safe(message.bot, chat_target, text_to_send, reply_markup=reply_kb)
     if send_err:
         await message.answer(
             "❌ فشل النشر (الحالة انتهت لكن حاولنا النشر).\n\n"
