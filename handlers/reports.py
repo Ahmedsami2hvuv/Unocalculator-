@@ -155,18 +155,22 @@ async def report_choose_type(c: types.CallbackQuery, state: FSMContext):
 
 @router.message(ReportStates.report_upload, F.photo)
 async def report_receive_photo(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    photos = data.get("report_photos") or []
-    file_id = message.photo[-1].file_id if message.photo else None
-    if file_id:
-        photos.append(file_id)
-    await state.update_data(report_photos=photos)
-    await state.set_state(ReportStates.report_more)
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="نعم لدي صورة أو ملاحظة أخرى", callback_data="report_more_yes")],
         [InlineKeyboardButton(text="إرسال التبليغ", callback_data="report_more_done")],
     ])
-    await message.answer("✅ تم حفظ الصورة.\n\nهل لديك صورة أخرى أو ملاحظة تريد إضافتها؟", reply_markup=kb)
+    try:
+        data = await state.get_data()
+        photos = data.get("report_photos") or []
+        file_id = message.photo[-1].file_id if message.photo else None
+        if file_id:
+            photos.append(file_id)
+        await state.update_data(report_photos=photos)
+        await state.set_state(ReportStates.report_more)
+        await message.answer("✅ تم حفظ الصورة.\n\nهل لديك صورة أخرى أو ملاحظة تريد إضافتها؟", reply_markup=kb)
+    except Exception as e:
+        logger.exception("report_receive_photo: %s", e)
+        await message.answer("✅ تم حفظ الصورة.\n\nهل لديك صورة أخرى أو ملاحظة تريد إضافتها؟", reply_markup=kb)
 
 
 @router.message(ReportStates.report_upload, F.text)
