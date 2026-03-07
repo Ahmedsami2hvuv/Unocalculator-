@@ -87,6 +87,35 @@ _LAST_POST_OPTIONS_WINDOW = 300  # 5 دقائق
 # هل أعمدة pending_post في users موجودة؟ None=لم نتحقق بعد، True/False بعد التحقق
 _pending_post_db_available: bool | None = None
 
+# هل جدول channel_posts مُنشأ (لإنشائه تلقائياً مرة واحدة)
+_channel_posts_ensured = False
+
+
+def _ensure_channel_posts_table():
+    """إنشاء جدول channel_posts إن لم يكن موجوداً (حتى تعمل «منشوراتي» دون تشغيل schema يدوياً)."""
+    global _channel_posts_ensured
+    if _channel_posts_ensured:
+        return
+    try:
+        db_query(
+            """CREATE TABLE IF NOT EXISTS channel_posts (
+                id SERIAL PRIMARY KEY,
+                channel_id TEXT NOT NULL,
+                message_id BIGINT NOT NULL,
+                publisher_uid BIGINT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                likes_count INT DEFAULT 0,
+                profile_clicks_count INT DEFAULT 0,
+                add_profile BOOLEAN DEFAULT TRUE,
+                join_code VARCHAR(20) DEFAULT NULL
+            )""",
+            commit=True
+        )
+        db_query("CREATE INDEX IF NOT EXISTS idx_channel_posts_publisher ON channel_posts(publisher_uid)", commit=True)
+        _channel_posts_ensured = True
+    except Exception as e:
+        logger.warning("ensure channel_posts table: %s", e)
+
 
 def _check_pending_post_columns():
     """التحقق مرة واحدة من وجود أعمدة pending_post في جدول users (بدون استدعائها)."""
@@ -634,6 +663,7 @@ async def post_back(c: types.CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data == "community_uno_menu")
 async def community_uno_menu(c: types.CallbackQuery):
+    _ensure_channel_posts_table()
     rows = [
         [InlineKeyboardButton(text="📢 نشر منشور بالقناة", callback_data="player_post_start")],
     ]
@@ -662,13 +692,20 @@ def _post_link(post: dict):
 
 @router.callback_query(F.data == "my_posts_list")
 async def my_posts_list(c: types.CallbackQuery):
-    uid = c.from_user.id
+    _ensure_channel_posts_table()
+    uid = int(c.from_user.id)
     try:
         posts = db_query(
-            "SELECT id, message_id, channel_id, created_at, likes_count, profile_clicks_count FROM channel_posts WHERE publisher_uid = %s ORDER BY created_at DESC LIMIT 30",
+            "SELECT id, message_id, channel_id, created_at, likes_count, profile_clicks_count, publisher_uid FROM channel_posts WHERE publisher_uid = %s ORDER BY created_at DESC LIMIT 30",
             (uid,)
         )
-    except Exception:
+        if not posts and uid:
+            posts = db_query(
+                "SELECT id, message_id, channel_id, created_at, likes_count, profile_clicks_count, publisher_uid FROM channel_posts WHERE CAST(publisher_uid AS TEXT) = %s ORDER BY created_at DESC LIMIT 30",
+                (str(uid),)
+            )
+    except Exception as e:
+        logger.warning("my_posts_list query failed for uid=%s: %s", uid, e)
         posts = []
     if not posts:
         await c.message.edit_text(
@@ -713,7 +750,13 @@ async def delete_post_confirm(c: types.CallbackQuery):
         return
     post_id = int(post_id)
     row = db_query("SELECT id, publisher_uid, channel_id, message_id FROM channel_posts WHERE id = %s", (post_id,))
-    if not row or row[0].get("publisher_uid") != c.from_user.id:
+    try:
+        pub_uid = row[0].get("publisher_uid") if row else None
+        if pub_uid is not None:
+            pub_uid = int(pub_uid)
+    except (TypeError, ValueError):
+        pub_uid = None
+    if not row or pub_uid != c.from_user.id:
         await c.answer("⚠️ لا يمكنك حذف هذا المنشور.", show_alert=True)
         return
     await c.message.edit_text(
@@ -736,7 +779,13 @@ async def delete_post_yes(c: types.CallbackQuery):
     post_id = int(post_id)
     uid = c.from_user.id
     row = db_query("SELECT id, publisher_uid, channel_id, message_id FROM channel_posts WHERE id = %s", (post_id,))
-    if not row or row[0].get("publisher_uid") != uid:
+    try:
+        pub_uid = row[0].get("publisher_uid") if row else None
+        if pub_uid is not None:
+            pub_uid = int(pub_uid)
+    except (TypeError, ValueError):
+        pub_uid = None
+    if not row or pub_uid != uid:
         await c.answer("⚠️ لا يمكنك حذف هذا المنشور.", show_alert=True)
         return
     ch_id = row[0].get("channel_id")
