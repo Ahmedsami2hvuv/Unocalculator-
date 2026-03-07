@@ -1873,17 +1873,23 @@ async def help_request_text(message: types.Message, state: FSMContext):
     except Exception:
         pass
     sent_any = False
-    for aid in admin_ids:
-        try:
-            msg = "🆘 **طلب مساعدة**\n\n" + file_text.replace("`", "'")[:3800]
-            if len(file_text) > 3800:
-                msg += "\n\n...(مختصر)"
-            await message.bot.send_message(aid, msg, parse_mode="Markdown")
-            sent_any = True
-        except Exception as e:
-            logger.warning("help_request: send to admin %s failed: %s", aid, e)
     if not admin_ids:
         logger.warning("help_request: لا يوجد ADMIN_ID أو ADMIN_IDS في متغيرات البيئة — لم يُرسل طلب المساعدة لأي مدير.")
+    else:
+        logger.info("help_request: إرسال إلى الأدمن: %s", list(admin_ids))
+    msg_body = file_text.replace("`", "'")[:3800]
+    if len(file_text) > 3800:
+        msg_body += "\n\n...(مختصر)"
+    for aid in admin_ids:
+        try:
+            await message.bot.send_message(aid, "🆘 **طلب مساعدة**\n\n" + msg_body, parse_mode="Markdown")
+            sent_any = True
+        except Exception as e1:
+            try:
+                await message.bot.send_message(aid, "🆘 طلب مساعدة\n\n" + msg_body.replace("*", "").replace("_", ""))
+                sent_any = True
+            except Exception as e2:
+                logger.warning("help_request: send to admin %s failed: %s then %s", aid, e1, e2)
     await state.clear()
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 رجوع", callback_data="my_account")]])
     await message.answer("✅ تم إرسال طلب المساعدة للإدارة. سنتواصل معك قريباً.", reply_markup=kb)
@@ -1910,12 +1916,16 @@ async def help_request_media(message: types.Message, state: FSMContext):
         )
     except Exception:
         pass
+    if not admin_ids:
+        logger.warning("help_request_media: لا يوجد ADMIN_ID — لم يُرسل لأي مدير.")
+    else:
+        logger.info("help_request_media: إرسال إلى الأدمن: %s", list(admin_ids))
+    msg_body = file_text.replace("`", "'")[:3800]
+    if len(file_text) > 3800:
+        msg_body += "\n\n...(مختصر)"
     for aid in admin_ids:
         try:
-            msg = "🆘 **طلب مساعدة**\n\n" + file_text.replace("`", "'")[:3800]
-            if len(file_text) > 3800:
-                msg += "\n\n...(مختصر)"
-            await message.bot.send_message(aid, msg, parse_mode="Markdown")
+            await message.bot.send_message(aid, "🆘 **طلب مساعدة**\n\n" + msg_body, parse_mode="Markdown")
             if message.photo:
                 await message.bot.send_photo(aid, message.photo[-1].file_id, caption=caption_long[:1000])
             elif message.voice:
@@ -1926,9 +1936,18 @@ async def help_request_media(message: types.Message, state: FSMContext):
             elif message.document:
                 await message.bot.send_document(aid, message.document.file_id, caption=caption_long[:1000])
         except Exception as e:
-            logger.warning("help_request_media: send to admin %s failed: %s", aid, e)
-    if not admin_ids:
-        logger.warning("help_request_media: لا يوجد ADMIN_ID — لم يُرسل لأي مدير.")
+            try:
+                await message.bot.send_message(aid, "🆘 طلب مساعدة\n\n" + msg_body.replace("*", "").replace("_", ""))
+                if message.photo:
+                    await message.bot.send_photo(aid, message.photo[-1].file_id, caption=caption_long[:1000])
+                elif message.voice:
+                    await message.bot.send_voice(aid, message.voice.file_id)
+                elif message.video:
+                    await message.bot.send_video(aid, message.video.file_id, caption=caption_long[:1000])
+                elif message.document:
+                    await message.bot.send_document(aid, message.document.file_id, caption=caption_long[:1000])
+            except Exception as e2:
+                logger.warning("help_request_media: send to admin %s failed: %s then %s", aid, e, e2)
     await state.clear()
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 رجوع", callback_data="my_account")]])
     await message.answer("✅ تم إرسال طلب المساعدة للإدارة.", reply_markup=kb)
