@@ -120,7 +120,7 @@ def _ensure_channel_posts_table():
 
 
 def _check_pending_post_columns():
-    """التحقق مرة واحدة من وجود أعمدة pending_post في جدول users (بدون استدعائها)."""
+    """التحقق مرة واحدة من وجود أعمدة pending_post في جدول users؛ إن وُجدت غير موجودة نحاول إضافتها تلقائياً."""
     global _pending_post_db_available
     if _pending_post_db_available is not None:
         return _pending_post_db_available
@@ -129,7 +129,23 @@ def _check_pending_post_columns():
             "SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'users' AND column_name = 'pending_post_options' LIMIT 1",
             ()
         )
-        _pending_post_db_available = bool(r and len(r) > 0)
+        if r and len(r) > 0:
+            _pending_post_db_available = True
+            return True
+        # الأعمدة غير موجودة — محاولة إضافتها تلقائياً (PostgreSQL: ADD COLUMN IF NOT EXISTS)
+        try:
+            db_query("ALTER TABLE users ADD COLUMN IF NOT EXISTS pending_post_options TEXT DEFAULT NULL", commit=True)
+            db_query("ALTER TABLE users ADD COLUMN IF NOT EXISTS pending_post_at TIMESTAMP DEFAULT NULL", commit=True)
+            r2 = db_query(
+                "SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'users' AND column_name = 'pending_post_options' LIMIT 1",
+                ()
+            )
+            _pending_post_db_available = bool(r2 and len(r2) > 0)
+            if _pending_post_db_available:
+                logger.info("pending_post: تم إضافة الأعمدة تلقائياً — النشر يعمل عبر قاعدة البيانات.")
+        except Exception as e:
+            logger.warning("pending_post: فشل إضافة الأعمدة تلقائياً: %s — شغّل run_channel_migration.sql يدوياً", e)
+            _pending_post_db_available = False
     except Exception:
         _pending_post_db_available = False
     if not _pending_post_db_available:
