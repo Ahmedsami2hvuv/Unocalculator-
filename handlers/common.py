@@ -1768,6 +1768,25 @@ async def help_request_start(c: types.CallbackQuery, state: FSMContext):
     await c.answer()
 
 
+def _build_user_file_text(uid: int, from_user: types.User) -> str:
+    """بناء نص ملف اللاعب الكامل من قاعدة البيانات + بيانات تليجرام."""
+    lines = ["═══════ ملف اللاعب ═══════", f"ايدي تليجرام: {uid}", f"الاسم في تليجرام: {from_user.full_name or '-'}", f"اليوزر: @{from_user.username}" if from_user.username else "اليوزر: -", ""]
+    try:
+        user_row = db_query("SELECT * FROM users WHERE user_id = %s", (uid,))
+        if user_row:
+            row = user_row[0]
+            for key in sorted(row.keys()):
+                val = row[key]
+                if val is None:
+                    val = ""
+                lines.append(f"{key}: {val}")
+        else:
+            lines.append("(لا يوجد سجل في جدول users بعد)")
+    except Exception as e:
+        lines.append(f"(خطأ عند قراءة users: {e})")
+    return "\n".join(lines)
+
+
 @router.message(RoomStates.help_request, F.text)
 async def help_request_text(message: types.Message, state: FSMContext):
     uid = message.from_user.id
@@ -1783,10 +1802,19 @@ async def help_request_text(message: types.Message, state: FSMContext):
     raw = os.getenv("ADMIN_ID", "").strip()
     if raw:
         admin_ids = set(int(x.strip()) for x in raw.split(",") if x.strip().isdigit())
+    file_text = _build_user_file_text(uid, message.from_user)
+    file_text += "\n\n═══════ رسالة طلب المساعدة ═══════\n\n" + (message.text or "")
     msg = f"🆘 **طلب مساعدة** من {name} {uname} (ايدي: {uid})\n\n{message.text or ''}"
     for aid in admin_ids:
         try:
             await message.bot.send_message(aid, msg, parse_mode="Markdown")
+            try:
+                from io import BytesIO
+                bio = BytesIO(file_text.encode("utf-8"))
+                fname = f"help_user_{uid}.txt"
+                await message.bot.send_document(aid, types.BufferedInputFile(bio.getvalue(), filename=fname), caption="📎 ملف اللاعب الكامل مع رسالة طلب المساعدة")
+            except Exception:
+                await message.bot.send_message(aid, "📎 **ملف اللاعب:**\n```\n" + file_text[:3500].replace("`", "'") + "\n```", parse_mode="Markdown")
         except Exception:
             pass
     await state.clear()
@@ -1805,18 +1833,27 @@ async def help_request_media(message: types.Message, state: FSMContext):
     raw = os.getenv("ADMIN_ID", "").strip()
     if raw:
         admin_ids = set(int(x.strip()) for x in raw.split(",") if x.strip().isdigit())
-    cap = f"🆘 طلب مساعدة من {name} {uname} (ايدي: {uid})"
+    file_text = _build_user_file_text(uid, message.from_user)
+    cap_media = f"🆘 طلب مساعدة من {name} {uname} (ايدي: {uid})"
+    caption_long = cap_media + "\n\n" + (message.caption or "")
     for aid in admin_ids:
         try:
+            try:
+                from io import BytesIO
+                bio = BytesIO(file_text.encode("utf-8"))
+                fname = f"help_user_{uid}.txt"
+                await message.bot.send_document(aid, types.BufferedInputFile(bio.getvalue(), filename=fname), caption="📎 ملف اللاعب الكامل")
+            except Exception:
+                await message.bot.send_message(aid, "📎 **ملف اللاعب:**\n```\n" + file_text[:3500].replace("`", "'") + "\n```", parse_mode="Markdown")
             if message.photo:
-                await message.bot.send_photo(aid, message.photo[-1].file_id, caption=cap)
+                await message.bot.send_photo(aid, message.photo[-1].file_id, caption=caption_long[:1000])
             elif message.voice:
-                await message.bot.send_message(aid, cap)
+                await message.bot.send_message(aid, caption_long[:4000])
                 await message.bot.send_voice(aid, message.voice.file_id)
             elif message.video:
-                await message.bot.send_video(aid, message.video.file_id, caption=cap)
+                await message.bot.send_video(aid, message.video.file_id, caption=caption_long[:1000])
             elif message.document:
-                await message.bot.send_document(aid, message.document.file_id, caption=cap)
+                await message.bot.send_document(aid, message.document.file_id, caption=caption_long[:1000])
         except Exception:
             pass
     await state.clear()
