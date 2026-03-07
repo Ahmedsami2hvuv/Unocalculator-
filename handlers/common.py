@@ -206,7 +206,7 @@ async def channel_subscribe_callback_middleware(handler, event: types.CallbackQu
         return await handler(event, data)
     # مجتمع الأونو والنشر: نسمح بالدخول دائماً (القائمة، نشر منشور، منشوراتي، إلخ)
     if cd in ("community_uno_menu", "player_post_start", "post_toggle_profile", "post_toggle_play",
-              "post_ready_send", "post_back", "my_posts_list", "player_posts_channel") or cd.startswith("admin_") or cd.startswith("report_") or cd.startswith("user_block_") or cd.startswith("user_unblock_"):
+              "post_ready_send", "post_back", "my_posts_list", "player_posts_channel", "my_reports", "help_request") or cd.startswith("admin_") or cd.startswith("report_") or cd.startswith("user_block_") or cd.startswith("user_unblock_"):
         return await handler(event, data)
     user_id = event.from_user.id if event.from_user else None
     if not user_id:
@@ -625,6 +625,7 @@ class RoomStates(StatesGroup):
     login_password = State()
     complete_profile_name = State()
     complete_profile_password = State()
+    help_request = State()
 
 
 # مجتمع الأونو والنشر: تم نقله إلى handlers/community_publish.py
@@ -1706,11 +1707,121 @@ async def show_profile(c: types.CallbackQuery):
     )
     kb = [
         [InlineKeyboardButton(text="✏️ تعديل بيانات الحساب", callback_data="edit_account"), InlineKeyboardButton(text="⚙️ الإعدادات", callback_data="my_settings")],
+        [InlineKeyboardButton(text="📋 تبليغاتي", callback_data="my_reports"), InlineKeyboardButton(text="🆘 طلب مساعدة", callback_data="help_request")],
         [InlineKeyboardButton(text="📜 سجل المباريات", callback_data="match_history")],
         [InlineKeyboardButton(text="🚪 تسجيل خروج", callback_data="account_logout")],
         [InlineKeyboardButton(text=t(uid, "btn_back"), callback_data="home")]
     ]
     await c.message.edit_text(txt, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+
+
+def _report_status_ar_common(status):
+    s = (status or "").strip().lower()
+    if s in ("in_progress", "جاري المتابعة"):
+        return "جاري المتابعة"
+    if s in ("completed", "تم التبليغ", "read"):
+        return "تم التبليغ"
+    if s in ("rejected", "مرفوض"):
+        return "مرفوض"
+    return "في الانتظار"
+
+
+@router.callback_query(F.data == "my_reports")
+async def my_reports_list(c: types.CallbackQuery):
+    uid = c.from_user.id
+    try:
+        rows = db_query(
+            """SELECT id, reported_id, report_type, status, created_at FROM reports
+               WHERE reporter_id = %s ORDER BY created_at DESC LIMIT 30""",
+            (uid,)
+        ) or []
+    except Exception:
+        rows = []
+    if not rows:
+        await c.message.edit_text(
+            "📋 **تبليغاتي**\n\nلا توجد تبليغات منك.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔙 حسابي", callback_data="my_account")]
+            ]),
+            parse_mode="Markdown"
+        )
+        return await c.answer()
+    text = "📋 **تبليغاتي**\n\n"
+    for r in rows:
+        rid = r.get("id")
+        status_ar = _report_status_ar_common(r.get("status"))
+        rep_type = r.get("report_type") or "—"
+        created = (str(r.get("created_at") or "")[:16]) if r.get("created_at") else "—"
+        text += f"• تبليغ #{rid} — {rep_type} — **{status_ar}** — {created}\n"
+    kb = [[InlineKeyboardButton(text="🔙 حسابي", callback_data="my_account")]]
+    await c.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="Markdown")
+    await c.answer()
+
+
+@router.callback_query(F.data == "help_request")
+async def help_request_start(c: types.CallbackQuery, state: FSMContext):
+    await state.set_state(RoomStates.help_request)
+    await c.message.edit_text(
+        "🆘 **طلب مساعدة**\n\nاكتب رسالتك للإدارة أو أرسل صورة/صوت.\n\nسيتم إرسالها فوراً للمدير.\n\nلإلغاء: /cancel",
+        parse_mode="Markdown"
+    )
+    await c.answer()
+
+
+@router.message(RoomStates.help_request, F.text)
+async def help_request_text(message: types.Message, state: FSMContext):
+    uid = message.from_user.id
+    if message.text and message.text.strip() == "/cancel":
+        await state.clear()
+        return await message.answer("تم الإلغاء.")
+    user = db_query("SELECT player_name, username_key FROM users WHERE user_id = %s", (uid,))
+    name = (user[0]["player_name"] if user else None) or message.from_user.full_name or "لاعب"
+    uname = (user[0].get("username_key") if user else None) or (message.from_user.username or "")
+    if uname:
+        uname = "@" + str(uname)
+    admin_ids = set()
+    raw = os.getenv("ADMIN_ID", "").strip()
+    if raw:
+        admin_ids = set(int(x.strip()) for x in raw.split(",") if x.strip().isdigit())
+    msg = f"🆘 **طلب مساعدة** من {name} {uname} (ايدي: {uid})\n\n{message.text or ''}"
+    for aid in admin_ids:
+        try:
+            await message.bot.send_message(aid, msg, parse_mode="Markdown")
+        except Exception:
+            pass
+    await state.clear()
+    await message.answer("✅ تم إرسال طلب المساعدة للإدارة. سنتواصل معك قريباً.")
+
+
+@router.message(RoomStates.help_request, F.photo | F.voice | F.video | F.document)
+async def help_request_media(message: types.Message, state: FSMContext):
+    uid = message.from_user.id
+    user = db_query("SELECT player_name, username_key FROM users WHERE user_id = %s", (uid,))
+    name = (user[0]["player_name"] if user else None) or message.from_user.full_name or "لاعب"
+    uname = (user[0].get("username_key") if user else None) or (message.from_user.username or "")
+    if uname:
+        uname = "@" + str(uname)
+    admin_ids = set()
+    raw = os.getenv("ADMIN_ID", "").strip()
+    if raw:
+        admin_ids = set(int(x.strip()) for x in raw.split(",") if x.strip().isdigit())
+    cap = f"🆘 طلب مساعدة من {name} {uname} (ايدي: {uid})"
+    for aid in admin_ids:
+        try:
+            if message.photo:
+                await message.bot.send_photo(aid, message.photo[-1].file_id, caption=cap)
+            elif message.voice:
+                await message.bot.send_message(aid, cap)
+                await message.bot.send_voice(aid, message.voice.file_id)
+            elif message.video:
+                await message.bot.send_video(aid, message.video.file_id, caption=cap)
+            elif message.document:
+                await message.bot.send_document(aid, message.document.file_id, caption=cap)
+        except Exception:
+            pass
+    await state.clear()
+    await message.answer("✅ تم إرسال طلب المساعدة للإدارة.")
+
 
 # --- إنشاء غرفة وإعطاء "رابط" بدل الكود ---
 @router.callback_query(F.data.startswith("roomset_"))
