@@ -3,6 +3,7 @@
 نظام التبليغ: بعد نهاية الجولة أو الانسحاب يظهر زر تبليغ → اختيار اللاعب → نوع التبليغ → رفع لقطات وملاحظة → إرسال للأدمن.
 """
 import json
+import logging
 import os
 from aiogram import Router, types, F
 from aiogram.fsm.context import FSMContext
@@ -10,6 +11,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from database import db_query
 
+logger = logging.getLogger(__name__)
 router = Router(name="reports")
 
 # استيراد من common عند الحاجة
@@ -312,11 +314,14 @@ async def report_confirm_send(c: types.CallbackQuery, state: FSMContext):
         return
     await state.clear()
 
-    # إرسال التبليغ للأدمن
-    admin_ids = set()
-    raw = os.getenv("ADMIN_ID", "").strip()
-    if raw:
-        admin_ids = set(int(x.strip()) for x in raw.split(",") if x.strip().isdigit())
+    # إرسال التبليغ للأدمن (نفس آلية طلب المساعدة: _get_admin_ids + HELP_CHAT_ID)
+    from handlers.common import _get_admin_ids
+    admin_ids = _get_admin_ids()
+    help_chat_id_raw = os.getenv("HELP_CHAT_ID", "").strip().strip('"').strip("'")
+    help_chat_id = help_chat_id_raw.strip() if help_chat_id_raw else ""
+    logger.info("report_confirm_send: reporter=%s admin_ids=%s HELP_CHAT_ID=%s", reporter_id, list(admin_ids), help_chat_id or "(غير مضبوط)")
+    if not admin_ids and not help_chat_id:
+        logger.warning("report_confirm_send: ADMIN_ID و HELP_CHAT_ID غير مضبوطين — التبليغ محفوظ في قاعدة البيانات فقط.")
     reporter_row = db_query("SELECT * FROM users WHERE user_id = %s", (reporter_id,))
     reported_row = db_query("SELECT * FROM users WHERE user_id = %s", (reported_id,))
     reporter_detail = _user_detail_for_admin(reporter_row[0]) if reporter_row else f"🆔 {reporter_id}"
@@ -333,15 +338,30 @@ async def report_confirm_send(c: types.CallbackQuery, state: FSMContext):
         head += f"**📝 الملاحظة:**\n{full_note}\n\n"
     head += "**📷 الصور:**"
 
-    for admin_id in admin_ids:
+    async def _send_report_to_chat(chat_id, label=""):
         try:
-            await c.bot.send_message(admin_id, head, parse_mode="Markdown")
+            await c.bot.send_message(chat_id, head, parse_mode="Markdown")
             for fid in photos[:10]:
-                await c.bot.send_photo(admin_id, fid)
+                await c.bot.send_photo(chat_id, fid)
             if len(photos) > 10:
-                await c.bot.send_message(admin_id, f"... و {len(photos) - 10} صورة إضافية.")
-        except Exception:
-            pass
+                await c.bot.send_message(chat_id, f"... و {len(photos) - 10} صورة إضافية.")
+            return True
+        except Exception as e1:
+            try:
+                plain = head.replace("**", "").replace("`", "'")
+                await c.bot.send_message(chat_id, plain)
+                for fid in photos[:10]:
+                    await c.bot.send_photo(chat_id, fid)
+                return True
+            except Exception as e2:
+                logger.warning("report_confirm_send: send to %s %s failed: %s then %s", label, chat_id, e1, e2)
+                return False
+
+    for admin_id in admin_ids:
+        await _send_report_to_chat(admin_id, "admin")
+    if help_chat_id:
+        ch_id = int(help_chat_id) if help_chat_id.lstrip("-").isdigit() else help_chat_id
+        await _send_report_to_chat(ch_id, "HELP_CHAT_ID")
 
     from handlers.common import show_main_menu
     user = db_query("SELECT player_name FROM users WHERE user_id = %s", (c.from_user.id,))
