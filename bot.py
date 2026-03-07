@@ -1,6 +1,14 @@
 import asyncio
 import os
 import logging
+
+# تحميل .env إن وُجد (مثلاً عند التشغيل المحلي أو على بعض السيرفرات)
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 from aiogram import Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
 from config import bot
@@ -47,6 +55,14 @@ async def main():
     admin_ids = _get_admin_ids()
     help_chat = (os.getenv("HELP_CHAT_ID") or "").strip().strip('"').strip("'")
     logging.info("ADMIN_ID(s)=%s  HELP_CHAT_ID=%s — إن كانت فارغة فلن تصل طلبات المساعدة والتبليغات للمدير.", list(admin_ids), help_chat or "(غير مضبوط)")
+    if not admin_ids and not help_chat:
+        print("\n" + "=" * 60)
+        print("⚠️  تحذير: رسائل «طلب المساعدة» والتبليغات لن تصل للإدارة!")
+        print("   لوصول الرسائل للمدير، ضع في متغيرات البيئة (أو في ملف .env):")
+        print("   • ADMIN_ID=رقم_تليجرام_للمدير  (مثال: 123456789)")
+        print("   • أو HELP_CHAT_ID=معرف_المجموعة (مثال: -1001234567890)")
+        print("   وتأكد أن المدير ضغط /start على البوت مرة واحدة على الأقل.")
+        print("=" * 60 + "\n")
 
     # 4. تنظيف التحديثات المعلقة
     await bot.delete_webhook(drop_pending_updates=True)
