@@ -2197,8 +2197,18 @@ def _build_profile_kb(uid: int, target_id: int, back_to_replay_id: str = None, f
         [InlineKeyboardButton(text=follow_btn_text, callback_data=follow_callback)],
         [InlineKeyboardButton(text=t(uid, "btn_invite_play"), callback_data=invite_callback)],
     ]
-    if (uid, target_id) in invite_mutes and not from_channel:
+    # كتم الدعوات: إما تعديل الكتم (إن كان مكتوماً) أو كتم الدعوات
+    if (uid, target_id) in invite_mutes:
         kb.append([InlineKeyboardButton(text="✏️ تعديل الكتم", callback_data=f"mute_inv_{target_id}")])
+    else:
+        kb.append([InlineKeyboardButton(text="🔇 كتم الدعوات", callback_data=f"mute_inv_{target_id}")])
+    # للأدمن: زر حظر اللاعب من بروفايله
+    try:
+        from handlers.admin import is_admin
+        if is_admin(uid) and uid != target_id:
+            kb.append([InlineKeyboardButton(text="🚫 حظر اللاعب", callback_data=f"admin_ban_{target_id}")])
+    except Exception:
+        pass
     if back_to_replay_id:
         kb.append([InlineKeyboardButton(text="🔙 رجوع لشاشة اللعبة", callback_data=f"gameend_back_{back_to_replay_id}")])
     elif from_channel:
@@ -3266,6 +3276,14 @@ async def process_user_search(message: types.Message, state: FSMContext):
     kb.append([InlineKeyboardButton(text=t(uid, "btn_invite_play"), callback_data=f"invite_{t_uid}")])
     if (uid, t_uid) in invite_mutes:
         kb.append([InlineKeyboardButton(text="✏️ تعديل الكتم", callback_data=f"mute_inv_{t_uid}")])
+    else:
+        kb.append([InlineKeyboardButton(text="🔇 كتم الدعوات", callback_data=f"mute_inv_{t_uid}")])
+    try:
+        from handlers.admin import is_admin
+        if is_admin(uid) and uid != t_uid:
+            kb.append([InlineKeyboardButton(text="🚫 حظر اللاعب", callback_data=f"admin_ban_{t_uid}")])
+    except Exception:
+        pass
     kb.append([InlineKeyboardButton(text=t(uid, "btn_back"), callback_data="social_menu")])
     await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
     await state.clear() # إنهاء حالة البحث
