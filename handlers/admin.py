@@ -298,7 +298,8 @@ async def admin_start_chat_click(c: types.CallbackQuery, state: FSMContext):
 async def _admin_chat_ended(bot, admin_id: int, user_id: int):
     """استدعاء عند إنهاء اللاعب للمحادثة."""
     try:
-        await bot.send_message(admin_id, "🔚 أنهى اللاعب المحادثة.")
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 رجوع", callback_data="admin_back")]])
+        await bot.send_message(admin_id, "🔚 أنهى اللاعب المحادثة.", reply_markup=kb)
     except Exception:
         pass
 
@@ -310,11 +311,13 @@ async def admin_end_chat_callback(c: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
     user_id = data.get("admin_chat_with_uid")
     await state.clear()
-    await c.message.edit_text("تم إنهاء المحادثة.")
+    kb_admin = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 رجوع", callback_data="admin_back")]])
+    await c.message.edit_text("تم إنهاء المحادثة.", reply_markup=kb_admin)
     await c.answer()
     if user_id:
         try:
-            await c.bot.send_message(user_id, "🔚 أنهت الإدارة المحادثة.")
+            kb_user = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 رجوع", callback_data="my_account")]])
+            await c.bot.send_message(user_id, "🔚 أنهت الإدارة المحادثة.", reply_markup=kb_user)
         except Exception:
             pass
 
