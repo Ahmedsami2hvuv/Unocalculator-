@@ -275,14 +275,8 @@ def check_post_content(text):
         return False, "الرسالة فارغة."
     text_lower = (text if isinstance(text, str) else getattr(text, "text", "") or "").strip().lower()
     words = _load_banned_words()
-    # مطابقة كلمة كاملة فقط (حد كلمة) حتى لا تُرفض كلمات مثل «مرحبا» لأنها تحتوي مقطع «حب»
-    _letter = r"[a-zA-Z\u0600-\u06FF]"
     for w in words:
-        if not w:
-            continue
-        # أن تظهر الكلمة الممنوعة ككلمة مستقلة (قبلها وبعدها ليس حرفاً)
-        pattern = r"(?:^|(?<!" + _letter + r"))" + re.escape(w) + r"(?:$|(?!" + _letter + r"))"
-        if re.search(pattern, text_lower):
+        if w and w in text_lower:
             return False, "رسالتك تنتهك معاييرنا."
     if _contains_phone(text):
         return False, "رسالتك تنتهك معاييرنا (لا يُسمح بنشر أرقام هواتف)."
