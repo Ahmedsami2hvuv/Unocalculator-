@@ -16,10 +16,11 @@ from handlers.stats import router as stats_router
 
 # روتر النشر أولاً حتى تُعالَج رسائل «نشر منشور» من مجتمع الأونو قبل أي معالج آخر
 try:
-    from handlers.community_publish import router as community_publish_router
+    from handlers.community_publish import router as community_publish_router, run_publish_migration
     _use_publish_router = True
 except Exception as e:
     community_publish_router = None
+    run_publish_migration = None
     _use_publish_router = False
     print(f"⚠️ تعذّر تحميل community_publish — زر «مجتمع الأونو» لن يعمل: {e}")
 
@@ -28,6 +29,12 @@ logging.basicConfig(level=logging.INFO)
 async def main():
     # 1. تهيئة قاعدة البيانات أولاً
     init_db()
+    # تهيئة جداول/أعمدة النشر (حتى يعمل النشر بعد إعادة التشغيل أو لو حصل تداخل قصير)
+    if run_publish_migration is not None:
+        try:
+            run_publish_migration()
+        except Exception as e:
+            logging.warning("run_publish_migration: %s", e)
 
     # 2. إعداد الموزع (Dispatcher) مع ذاكرة مؤقتة للـ States
     dp = Dispatcher(storage=MemoryStorage())
