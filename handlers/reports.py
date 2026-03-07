@@ -169,10 +169,11 @@ async def report_receive_photo(message: types.Message, state: FSMContext):
 
 @router.message(ReportStates.report_upload, F.text)
 async def report_upload_expect_photo(message: types.Message, state: FSMContext):
-    if message.text and message.text.strip() in ("/cancel", "/start"):
+    if message.text and message.text.strip().lower() in ("/cancel", "cancel", "الغاء", "إلغاء", "/start"):
         await state.clear()
-        return await message.answer("تم الإلغاء.")
-    await message.answer("يرجى إرسال **صورة سكرين شوت** أولاً (صورة واحدة على الأقل). لإلغاء التبليغ أرسل /cancel")
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 رجوع", callback_data="home")]])
+        return await message.answer("تم الإلغاء.", reply_markup=kb)
+    await message.answer("يرجى إرسال **صورة سكرين شوت** أولاً (صورة واحدة على الأقل). لإلغاء التبليغ اضغط **رجوع**.")
 
 
 @router.callback_query(ReportStates.report_more, F.data == "report_more_yes")
@@ -219,9 +220,10 @@ async def report_more_receive_photo(message: types.Message, state: FSMContext):
 
 @router.message(ReportStates.report_more, F.text)
 async def report_more_receive_text(message: types.Message, state: FSMContext):
-    if message.text and message.text.strip() in ("/cancel", "/start"):
+    if message.text and message.text.strip().lower() in ("/cancel", "cancel", "الغاء", "إلغاء", "/start"):
         await state.clear()
-        return await message.answer("تم الإلغاء.")
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 رجوع", callback_data="home")]])
+        return await message.answer("تم الإلغاء.", reply_markup=kb)
     data = await state.get_data()
     note = data.get("report_note")
     extra = (message.text or "").strip()[:2000]
