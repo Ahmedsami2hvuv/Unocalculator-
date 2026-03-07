@@ -39,12 +39,12 @@ async def main():
     # 2. إعداد الموزع (Dispatcher) مع ذاكرة مؤقتة للـ States
     dp = Dispatcher(storage=MemoryStorage())
 
-    # 3. ربط الراوترات: common ثم reports ثم النشر — حتى لا تُلتقط صورة التبليغ أو رسالة المساعدة من معالج آخر
+    # 3. ربط الراوترات: common ثم reports ثم admin ثم النشر — حتى رسائل الأدمن (محادثة مع لاعب، نشر) تصل للمعالج الصحيح ولا تُسرق من معالجات النشر
     dp.include_router(common_router)
     dp.include_router(reports_router)
+    dp.include_router(admin_router)
     if _use_publish_router:
         dp.include_router(community_publish_router)
-    dp.include_router(admin_router)
     dp.include_router(room_2p_router)
     dp.include_router(room_multi_router)
     dp.include_router(calc_router)
