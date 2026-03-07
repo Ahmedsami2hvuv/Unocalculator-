@@ -10,6 +10,7 @@ import time
 import logging
 from aiogram import Router, types, F
 from aiogram.fsm.context import FSMContext
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import BaseFilter, Command
@@ -668,11 +669,15 @@ async def post_back(c: types.CallbackQuery, state: FSMContext):
         rows.append([InlineKeyboardButton(text="📜 عرض القناة", callback_data="player_posts_channel")])
     rows.append([InlineKeyboardButton(text="📋 منشوراتي", callback_data="my_posts_list")])
     rows.append([InlineKeyboardButton(text="🔙 رجوع", callback_data="home")])
-    await c.message.edit_text(
-        "👥 **مجتمع الأونو**\n\nاختر:",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
-        parse_mode="Markdown"
-    )
+    try:
+        await c.message.edit_text(
+            "👥 **مجتمع الأونو**\n\nاختر:",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+            parse_mode="Markdown"
+        )
+    except TelegramBadRequest as e:
+        if "message is not modified" not in (str(e.message or "")):
+            raise
     await c.answer()
 
 
@@ -688,11 +693,15 @@ async def community_uno_menu(c: types.CallbackQuery):
         rows.append([InlineKeyboardButton(text="📜 عرض القناة", callback_data="player_posts_channel")])
     rows.append([InlineKeyboardButton(text="📋 منشوراتي", callback_data="my_posts_list")])
     rows.append([InlineKeyboardButton(text="🔙 رجوع", callback_data="home")])
-    await c.message.edit_text(
-        "👥 **مجتمع الأونو**\n\nاختر:",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
-        parse_mode="Markdown"
-    )
+    try:
+        await c.message.edit_text(
+            "👥 **مجتمع الأونو**\n\nاختر:",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+            parse_mode="Markdown"
+        )
+    except TelegramBadRequest as e:
+        if "message is not modified" not in (str(e.message or "")):
+            raise
     await c.answer()
 
 
