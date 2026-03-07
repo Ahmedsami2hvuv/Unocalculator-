@@ -33,6 +33,7 @@ class AdminStates(StatesGroup):
     edit_user_target = State()
     edit_user_field = State()
     edit_user_value = State()
+    report_reply_to_reporter = State()
 
 
 # --- /admin وزر القائمة الرئيسية ---
@@ -387,6 +388,89 @@ async def admin_broadcast_send_media(message: types.Message, state: FSMContext):
         await message.answer(f"❌ خطأ: {e}", reply_markup=_admin_broadcast_done_kb())
 
 
+# --- رد الأدمن على المبلّغ (بعد تم إكمال التبليغ أو مرفوض) ---
+async def _send_to_reporter_like_broadcast(bot, reporter_id: int, message: types.Message, header: str):
+    try:
+        if message.photo:
+            cap = (message.caption or "").strip() or header
+            await bot.send_photo(reporter_id, message.photo[-1].file_id, caption=cap)
+        elif message.video:
+            cap = (message.caption or "").strip() or header
+            await bot.send_video(reporter_id, message.video.file_id, caption=cap)
+        elif message.document:
+            cap = (message.caption or "").strip() or header
+            await bot.send_document(reporter_id, message.document.file_id, caption=cap)
+        elif message.audio:
+            cap = (message.caption or "").strip() or header
+            await bot.send_audio(reporter_id, message.audio.file_id, caption=cap)
+        elif message.voice:
+            await bot.send_message(reporter_id, header)
+            await bot.send_voice(reporter_id, message.voice.file_id)
+        else:
+            text = (message.text or "").strip() or header
+            await bot.send_message(reporter_id, f"{header}\n\n{text}")
+        return True
+    except Exception:
+        return False
+
+
+@router.message(AdminStates.report_reply_to_reporter, F.text)
+async def admin_report_reply_text(message: types.Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    if message.text and message.text.strip() == "/cancel":
+        await state.clear()
+        return await message.answer("تم الإلغاء.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔙 لوحة الإدارة", callback_data="admin_back")]
+        ]))
+    data = await state.get_data()
+    report_id = data.get("admin_report_id")
+    outcome = data.get("admin_report_outcome") or "completed"
+    if not report_id:
+        await state.clear()
+        return await message.answer("انتهت الجلسة. أعد فتح التبليغ.")
+    row = db_query("SELECT reporter_id FROM reports WHERE id = %s", (report_id,))
+    if not row:
+        await state.clear()
+        return await message.answer("التبليغ غير موجود.")
+    reporter_id = row[0]["reporter_id"]
+    header = "📩 تم مراجعة تبليغك وتم حظره." if outcome == "completed" else "📩 تم مراجعة تبليغك — التبليغ مرفوض."
+    await message.bot.send_message(reporter_id, f"{header}\n\n{message.text or ''}")
+    db_query("UPDATE reports SET status = %s WHERE id = %s", ("completed" if outcome == "completed" else "rejected", report_id), commit=True)
+    await state.clear()
+    await message.answer("✅ تم إرسال رسالتك للمبلّغ وتحديث حالة التبليغ.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔙 قائمة التبليغات", callback_data="admin_reports")],
+        [InlineKeyboardButton(text="🔙 لوحة الإدارة", callback_data="admin_back")],
+    ]))
+
+
+@router.message(AdminStates.report_reply_to_reporter, F.photo | F.voice | F.video | F.document | F.audio)
+async def admin_report_reply_media(message: types.Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    data = await state.get_data()
+    report_id = data.get("admin_report_id")
+    outcome = data.get("admin_report_outcome") or "completed"
+    if not report_id:
+        await state.clear()
+        return await message.answer("انتهت الجلسة.")
+    row = db_query("SELECT reporter_id FROM reports WHERE id = %s", (report_id,))
+    if not row:
+        await state.clear()
+        return await message.answer("التبليغ غير موجود.")
+    reporter_id = row[0]["reporter_id"]
+    header = "📩 تم مراجعة تبليغك وتم حظره." if outcome == "completed" else "📩 تم مراجعة تبليغك — التبليغ مرفوض."
+    if await _send_to_reporter_like_broadcast(message.bot, reporter_id, message, header):
+        db_query("UPDATE reports SET status = %s WHERE id = %s", ("completed" if outcome == "completed" else "rejected", report_id), commit=True)
+        await state.clear()
+        await message.answer("✅ تم إرسال رسالتك للمبلّغ وتحديث حالة التبليغ.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔙 قائمة التبليغات", callback_data="admin_reports")],
+            [InlineKeyboardButton(text="🔙 لوحة الإدارة", callback_data="admin_back")],
+        ]))
+    else:
+        await message.answer("⚠️ تعذر إرسال الرسالة للمبلّغ (ربما حظر البوت).")
+
+
 # --- إحصائيات ---
 @router.callback_query(F.data == "admin_stats")
 async def admin_stats(c: types.CallbackQuery):
@@ -412,9 +496,7 @@ async def admin_stats(c: types.CallbackQuery):
     await c.answer()
 
 
-# --- التبليغات: قائمة وتصفح وعرض وحظر المبلغ عليه ---
-REPORTS_PAGE_SIZE = 10
-
+# --- التبليغات: أزرار أرقام، عرض كامل، تم متابعة / إكمال / مرفوض ---
 def _reports_count():
     try:
         r = db_query("SELECT COUNT(*) AS c FROM reports")
@@ -422,7 +504,7 @@ def _reports_count():
     except Exception:
         return 0
 
-def _reports_list(offset: int = 0, limit: int = REPORTS_PAGE_SIZE):
+def _reports_list(offset: int = 0, limit: int = 50):
     try:
         return db_query(
             """SELECT id, reporter_id, reported_id, report_type, note, status, created_at
@@ -431,6 +513,17 @@ def _reports_list(offset: int = 0, limit: int = REPORTS_PAGE_SIZE):
         ) or []
     except Exception:
         return []
+
+
+def _report_status_ar(status):
+    s = (status or "").strip().lower()
+    if s == "in_progress" or s == "جاري المتابعة":
+        return "جاري المتابعة"
+    if s == "completed" or s == "تم التبليغ":
+        return "تم التبليغ"
+    if s == "rejected" or s == "مرفوض":
+        return "مرفوض"
+    return "في الانتظار"
 
 
 @router.callback_query(F.data == "admin_reports")
@@ -447,50 +540,20 @@ async def admin_reports_list(c: types.CallbackQuery, state: FSMContext):
             ])
         )
         return await c.answer()
-    rows = _reports_list(0, REPORTS_PAGE_SIZE)
-    text = f"📋 **التبليغات** ({total})\n\nاضغط على تبليغ لعرض التفاصيل.\n\n"
+    rows = _reports_list(0, 50)
+    text = f"📋 **التبليغات** — العدد: **{total}**\n\nاضغط على رقم لفتح التبليغ كاملاً:"
     kb = []
-    for r in rows:
-        rep_type = r.get("report_type") or "—"
+    row_btns = []
+    for i, r in enumerate(rows):
         rid = r.get("id")
-        created = (r.get("created_at") or "")[:16] if r.get("created_at") else "—"
-        text += f"• #{rid} — {rep_type} — {created}\n"
-        kb.append([InlineKeyboardButton(text=f"📋 عرض #{rid}", callback_data=f"admin_report_view_{rid}")])
-    if total > REPORTS_PAGE_SIZE:
-        kb.append([InlineKeyboardButton(text="▶️ التالي", callback_data="admin_reports_page_1")])
+        row_btns.append(InlineKeyboardButton(text=str(i + 1), callback_data=f"admin_report_view_{rid}"))
+        if len(row_btns) >= 5:
+            kb.append(row_btns)
+            row_btns = []
+    if row_btns:
+        kb.append(row_btns)
     kb.append([InlineKeyboardButton(text="🔙 رجوع", callback_data="admin_back")])
-    await c.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
-    await c.answer()
-
-
-@router.callback_query(F.data.startswith("admin_reports_page_"))
-async def admin_reports_page(c: types.CallbackQuery, state: FSMContext):
-    if not _admin_only(c):
-        return await c.answer("⛔ غير مسموح.", show_alert=True)
-    try:
-        page = int(c.data.replace("admin_reports_page_", "").strip())
-    except ValueError:
-        page = 0
-    total = _reports_count()
-    offset = page * REPORTS_PAGE_SIZE
-    if offset >= total:
-        page = 0
-        offset = 0
-    rows = _reports_list(offset, REPORTS_PAGE_SIZE)
-    text = f"📋 **التبليغات** (صفحة {page + 1})\n\n"
-    kb = []
-    for r in rows:
-        rid = r.get("id")
-        rep_type = r.get("report_type") or "—"
-        created = (r.get("created_at") or "")[:16] if r.get("created_at") else "—"
-        text += f"• #{rid} — {rep_type} — {created}\n"
-        kb.append([InlineKeyboardButton(text=f"📋 عرض #{rid}", callback_data=f"admin_report_view_{rid}")])
-    if page > 0:
-        kb.append([InlineKeyboardButton(text="◀️ السابق", callback_data=f"admin_reports_page_{page - 1}")])
-    if offset + len(rows) < total:
-        kb.append([InlineKeyboardButton(text="▶️ التالي", callback_data=f"admin_reports_page_{page + 1}")])
-    kb.append([InlineKeyboardButton(text="🔙 رجوع", callback_data="admin_reports")])
-    await c.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+    await c.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="Markdown")
     await c.answer()
 
 
@@ -511,21 +574,25 @@ async def admin_report_view(c: types.CallbackQuery):
     rep_type = r.get("report_type") or "—"
     note = (r.get("note") or "").strip() or "—"
     photos_json = r.get("photos_json")
+    status_ar = _report_status_ar(r.get("status"))
     reporter_row = db_query("SELECT * FROM users WHERE user_id = %s", (reporter_id,))
     reported_row = db_query("SELECT * FROM users WHERE user_id = %s", (reported_id,))
     rep_detail = _user_detail_text(reporter_row[0]) if reporter_row else f"🆔 {reporter_id}"
     reped_detail = _user_detail_text(reported_row[0]) if reported_row else f"🆔 {reported_id}"
     text = (
-        f"📋 <b>تبليغ #{report_id}</b>\n\n"
+        f"📋 <b>تبليغ #{report_id}</b> — الحالة: <b>{status_ar}</b>\n\n"
         f"<b>نوع التبليغ:</b> {html.escape(rep_type)}\n\n"
         f"<b>👤 مقدّم التبليغ:</b>\n{rep_detail}\n\n"
         f"<b>👤 المبلغ عليه:</b>\n{reped_detail}\n\n"
         f"<b>📝 الملاحظة:</b>\n{html.escape(note)}\n\n"
         "الصور أدناه (إن وُجدت)."
     )
+    status_raw = (r.get("status") or "").strip().lower()
     kb = [
+        [InlineKeyboardButton(text="📌 تم متابعة التبليغ", callback_data=f"admin_report_inprogress_{report_id}")],
+        [InlineKeyboardButton(text="✅ تم إكمال التبليغ", callback_data=f"admin_report_complete_{report_id}")],
+        [InlineKeyboardButton(text="❌ مرفوض", callback_data=f"admin_report_reject_{report_id}")],
         [InlineKeyboardButton(text="🚫 حظر المبلغ عليه", callback_data=f"admin_report_ban_{report_id}")],
-        [InlineKeyboardButton(text="✅ تمت المراجعة", callback_data=f"admin_report_done_{report_id}")],
         [InlineKeyboardButton(text="◀️ السابق", callback_data=f"admin_report_prev_{report_id}")],
         [InlineKeyboardButton(text="▶️ التالي", callback_data=f"admin_report_next_{report_id}")],
         [InlineKeyboardButton(text="🔙 قائمة التبليغات", callback_data="admin_reports")],
@@ -569,21 +636,67 @@ async def admin_report_ban(c: types.CallbackQuery):
     await admin_report_view(c)
 
 
-@router.callback_query(F.data.startswith("admin_report_done_"))
-async def admin_report_done(c: types.CallbackQuery):
+@router.callback_query(F.data.startswith("admin_report_inprogress_"))
+async def admin_report_inprogress(c: types.CallbackQuery):
     if not _admin_only(c):
         return await c.answer("⛔ غير مسموح.", show_alert=True)
     try:
-        report_id = int(c.data.replace("admin_report_done_", "").strip())
+        report_id = int(c.data.replace("admin_report_inprogress_", "").strip())
     except ValueError:
         return await c.answer("خطأ.", show_alert=True)
+    row = db_query("SELECT reporter_id FROM reports WHERE id = %s", (report_id,))
+    if not row:
+        return await c.answer("التبليغ غير موجود.", show_alert=True)
     try:
-        db_query("UPDATE reports SET status = 'read' WHERE id = %s", (report_id,), commit=True)
+        db_query("UPDATE reports SET status = 'in_progress' WHERE id = %s", (report_id,), commit=True)
     except Exception:
         pass
-    await c.answer("✅ تم تعليم التبليغ كمراجَع.")
+    reporter_id = row[0]["reporter_id"]
+    try:
+        await c.bot.send_message(
+            reporter_id,
+            "📩 **الإدارة استلمت تبليغك وجاري المتابعة.**\n\nسيتم إعلامك عند الانتهاء من المراجعة.",
+            parse_mode="Markdown"
+        )
+    except Exception:
+        pass
+    await c.answer("✅ تم. تم إشعار المبلّغ بأن التبليغ جاري متابعته.", show_alert=True)
     c.data = f"admin_report_view_{report_id}"
     await admin_report_view(c)
+
+
+@router.callback_query(F.data.startswith("admin_report_complete_"))
+async def admin_report_complete_ask(c: types.CallbackQuery, state: FSMContext):
+    if not _admin_only(c):
+        return await c.answer("⛔ غير مسموح.", show_alert=True)
+    try:
+        report_id = int(c.data.replace("admin_report_complete_", "").strip())
+    except ValueError:
+        return await c.answer("خطأ.", show_alert=True)
+    await state.set_state(AdminStates.report_reply_to_reporter)
+    await state.update_data(admin_report_id=report_id, admin_report_outcome="completed")
+    await c.message.edit_text(
+        "✅ **تم إكمال التبليغ**\n\nأرسل الآن **رسالتك للمبلّغ** (مثل: تم مراجعة تبليغك وتم حظره).\n\nيمكنك إرسال: نص، صورة، صوت، أو أي وسائط.\n\nلإلغاء: /cancel",
+        parse_mode="Markdown"
+    )
+    await c.answer()
+
+
+@router.callback_query(F.data.startswith("admin_report_reject_"))
+async def admin_report_reject_ask(c: types.CallbackQuery, state: FSMContext):
+    if not _admin_only(c):
+        return await c.answer("⛔ غير مسموح.", show_alert=True)
+    try:
+        report_id = int(c.data.replace("admin_report_reject_", "").strip())
+    except ValueError:
+        return await c.answer("خطأ.", show_alert=True)
+    await state.set_state(AdminStates.report_reply_to_reporter)
+    await state.update_data(admin_report_id=report_id, admin_report_outcome="rejected")
+    await c.message.edit_text(
+        "❌ **مرفوض**\n\nأرسل الآن **رسالتك للمبلّغ** (مثل: تم مراجعة تبليغك - التبليغ مرفوض).\n\nيمكنك إرسال: نص، صورة، صوت، أو أي وسائط.\n\nلإلغاء: /cancel",
+        parse_mode="Markdown"
+    )
+    await c.answer()
 
 
 @router.callback_query(F.data.startswith("admin_report_prev_"))
