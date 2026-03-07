@@ -206,7 +206,7 @@ async def channel_subscribe_callback_middleware(handler, event: types.CallbackQu
         return await handler(event, data)
     # مجتمع الأونو والنشر: نسمح بالدخول دائماً (القائمة، نشر منشور، منشوراتي، إلخ)
     if cd in ("community_uno_menu", "player_post_start", "post_toggle_profile", "post_toggle_play",
-              "post_ready_send", "post_back", "my_posts_list", "player_posts_channel") or cd.startswith("admin_") or cd.startswith("report_"):
+              "post_ready_send", "post_back", "my_posts_list", "player_posts_channel") or cd.startswith("admin_") or cd.startswith("report_") or cd.startswith("user_block_") or cd.startswith("user_unblock_"):
         return await handler(event, data)
     user_id = event.from_user.id if event.from_user else None
     if not user_id:
@@ -893,6 +893,12 @@ async def process_start_deeplink(message: types.Message, payload: str, state: FS
             target = db_query("SELECT * FROM users WHERE user_id = %s", (target_id,))
             if target:
                 t_user = target[0]
+                if _is_user_blocked(target_id, uid):
+                    name = (t_user.get("player_name") or "لاعب")[:50]
+                    profile_text = f"⛔ **اللاعب {name} قام بحظرك.**\n\nلا يمكنك عرض بروفايله أو إرسال دعوة له."
+                    kb = _profile_back_only_kb(uid, None, from_channel=True)
+                    await message.answer(profile_text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="Markdown")
+                    return True
                 profile_text = _build_profile_text(uid, t_user, target_id)
                 kb = _build_profile_kb(uid, target_id, from_channel=True)
                 await message.answer(profile_text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
@@ -2176,6 +2182,32 @@ def _build_profile_text(uid: int, t_user: dict, target_id: int) -> str:
     return text
 
 
+def _profile_back_only_kb(uid: int, back_to_replay_id: str = None, from_channel: bool = False):
+    """كيبورد رجوع فقط (لشاشة «قام بحظرك» أو عند عدم صلاحية عرض البروفايل)."""
+    kb = []
+    if back_to_replay_id:
+        kb.append([InlineKeyboardButton(text="🔙 رجوع لشاشة اللعبة", callback_data=f"gameend_back_{back_to_replay_id}")])
+    elif from_channel:
+        if PUBLISH_CHANNEL_USERNAME:
+            ch_user = PUBLISH_CHANNEL_USERNAME.lstrip("@")
+            kb.append([InlineKeyboardButton(text="📢 رجوع للقناة", url=f"https://t.me/{ch_user}")])
+        back_to_leaderboard = None
+        try:
+            back_to_leaderboard = _pending_profile_back.get(uid)
+        except Exception:
+            pass
+        if back_to_leaderboard:
+            kb.append([
+                InlineKeyboardButton(text="🔙 رجوع", callback_data=back_to_leaderboard),
+                InlineKeyboardButton(text="🏠 القائمة الرئيسية", callback_data="home"),
+            ])
+        else:
+            kb.append([InlineKeyboardButton(text="🔙 القائمة الرئيسية", callback_data="home")])
+    else:
+        kb.append([InlineKeyboardButton(text=t(uid, "btn_back"), callback_data="social_menu")])
+    return kb
+
+
 def _build_profile_kb(uid: int, target_id: int, back_to_replay_id: str = None, from_channel: bool = False):
     """يبني كيبورد بروفايل اللاعب.
 
@@ -2202,34 +2234,20 @@ def _build_profile_kb(uid: int, target_id: int, back_to_replay_id: str = None, f
         kb.append([InlineKeyboardButton(text="✏️ تعديل الكتم", callback_data=f"mute_inv_{target_id}")])
     else:
         kb.append([InlineKeyboardButton(text="🔇 كتم الدعوات", callback_data=f"mute_inv_{target_id}")])
-    # للأدمن: زر حظر اللاعب من بروفايله
+    # حظر بين اللاعبين: كل لاعب يمكنه حظر الآخر (من جهته)
+    if uid != target_id:
+        if _is_user_blocked(uid, target_id):
+            kb.append([InlineKeyboardButton(text="✅ إلغاء الحظر", callback_data=f"user_unblock_{target_id}")])
+        else:
+            kb.append([InlineKeyboardButton(text="🚫 حظره", callback_data=f"user_block_{target_id}")])
+    # للأدمن: زر حظر اللاعب من البوت (حظر رسمي)
     try:
         from handlers.admin import is_admin
         if is_admin(uid) and uid != target_id:
-            kb.append([InlineKeyboardButton(text="🚫 حظر اللاعب", callback_data=f"admin_ban_{target_id}")])
+            kb.append([InlineKeyboardButton(text="🚫 حظر اللاعب (أدمن)", callback_data=f"admin_ban_{target_id}")])
     except Exception:
         pass
-    if back_to_replay_id:
-        kb.append([InlineKeyboardButton(text="🔙 رجوع لشاشة اللعبة", callback_data=f"gameend_back_{back_to_replay_id}")])
-    elif from_channel:
-        if PUBLISH_CHANNEL_USERNAME:
-            ch_user = PUBLISH_CHANNEL_USERNAME.lstrip("@")
-            kb.append([InlineKeyboardButton(text="📢 رجوع للقناة", url=f"https://t.me/{ch_user}")])
-        # من لوحة المتصدرين: نضيف زر رجوع بجانب الرئيسية
-        back_to_leaderboard = None
-        try:
-            back_to_leaderboard = _pending_profile_back.get(uid)
-        except Exception:
-            back_to_leaderboard = None
-        if back_to_leaderboard:
-            kb.append([
-                InlineKeyboardButton(text="🔙 رجوع", callback_data=back_to_leaderboard),
-                InlineKeyboardButton(text="🏠 القائمة الرئيسية", callback_data="home"),
-            ])
-        else:
-            kb.append([InlineKeyboardButton(text="🔙 القائمة الرئيسية", callback_data="home")])
-    else:
-        kb.append([InlineKeyboardButton(text=t(uid, "btn_back"), callback_data="social_menu")])
+    kb.extend(_profile_back_only_kb(uid, back_to_replay_id, from_channel))
     return kb
 
 
@@ -2240,6 +2258,12 @@ async def process_user_search_by_id(c: types.CallbackQuery, target_id: int, back
     if not target:
         return await c.answer("❌ اللاعب غير موجود.", show_alert=True)
     t_user = target[0]
+    if _is_user_blocked(target_id, uid):
+        name = (t_user.get("player_name") or "لاعب")[:50]
+        text = f"⛔ **اللاعب {name} قام بحظرك.**\n\nلا يمكنك عرض بروفايله أو إرسال دعوة له."
+        kb = _profile_back_only_kb(uid, back_to_replay_id, from_channel)
+        await c.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="Markdown")
+        return
     text = _build_profile_text(uid, t_user, target_id)
     kb = _build_profile_kb(uid, target_id, back_to_replay_id=back_to_replay_id, from_channel=from_channel)
     await c.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
@@ -2849,6 +2873,19 @@ async def account_logout_confirm(c: types.CallbackQuery, state: FSMContext):
             db_query("ALTER TABLE users ADD COLUMN is_banned BOOLEAN DEFAULT FALSE", commit=True)
         except Exception:
             pass
+    # جدول حظر اللاعبين لبعضهم (blocker_id حظر blocked_id)
+    try:
+        db_query(
+            """CREATE TABLE IF NOT EXISTS user_blocks (
+                blocker_id BIGINT NOT NULL,
+                blocked_id BIGINT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (blocker_id, blocked_id)
+            )""",
+            commit=True
+        )
+    except Exception:
+        pass
     try:
         db_query("UPDATE users SET logged_out = TRUE WHERE user_id = %s", (uid,), commit=True)
     except Exception:
@@ -3261,6 +3298,14 @@ async def process_user_search(message: types.Message, state: FSMContext):
     t_user = target[0]
     t_uid = t_user['user_id']
     
+    if _is_user_blocked(t_uid, uid):
+        name = (t_user.get("player_name") or "لاعب")[:50]
+        text = f"⛔ **اللاعب {name} قام بحظرك.**\n\nلا يمكنك عرض بروفايله أو إرسال دعوة له."
+        kb = [[InlineKeyboardButton(text=t(uid, "btn_back"), callback_data="social_menu")]]
+        await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="Markdown")
+        await state.clear()
+        return
+
     # فحص إذا كنت تتابعه حالياً
     is_following = db_query("SELECT 1 FROM follows WHERE follower_id = %s AND following_id = %s", (uid, t_uid))
     
@@ -3278,10 +3323,15 @@ async def process_user_search(message: types.Message, state: FSMContext):
         kb.append([InlineKeyboardButton(text="✏️ تعديل الكتم", callback_data=f"mute_inv_{t_uid}")])
     else:
         kb.append([InlineKeyboardButton(text="🔇 كتم الدعوات", callback_data=f"mute_inv_{t_uid}")])
+    if uid != t_uid:
+        if _is_user_blocked(uid, t_uid):
+            kb.append([InlineKeyboardButton(text="✅ إلغاء الحظر", callback_data=f"user_unblock_{t_uid}")])
+        else:
+            kb.append([InlineKeyboardButton(text="🚫 حظره", callback_data=f"user_block_{t_uid}")])
     try:
         from handlers.admin import is_admin
         if is_admin(uid) and uid != t_uid:
-            kb.append([InlineKeyboardButton(text="🚫 حظر اللاعب", callback_data=f"admin_ban_{t_uid}")])
+            kb.append([InlineKeyboardButton(text="🚫 حظر اللاعب (أدمن)", callback_data=f"admin_ban_{t_uid}")])
     except Exception:
         pass
     kb.append([InlineKeyboardButton(text=t(uid, "btn_back"), callback_data="social_menu")])
@@ -3537,6 +3587,28 @@ async def show_leaderboard(c: types.CallbackQuery):
         await c.message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="Markdown")
     await c.answer()
 
+# --- حظر اللاعبين لبعضهم (من جهة اللاعب فقط: لا استقبال دعوات ولا ظهور في القوائم) ---
+def _is_user_blocked(blocker_id: int, blocked_id: int) -> bool:
+    """هل blocker_id حظر blocked_id؟"""
+    try:
+        r = db_query("SELECT 1 FROM user_blocks WHERE blocker_id = %s AND blocked_id = %s", (blocker_id, blocked_id))
+        return bool(r)
+    except Exception:
+        return False
+
+def _block_user(blocker_id: int, blocked_id: int) -> bool:
+    try:
+        db_query("INSERT INTO user_blocks (blocker_id, blocked_id) VALUES (%s, %s)", (blocker_id, blocked_id), commit=True)
+        return True
+    except Exception:
+        return False
+
+def _unblock_user(blocker_id: int, blocked_id: int):
+    try:
+        db_query("DELETE FROM user_blocks WHERE blocker_id = %s AND blocked_id = %s", (blocker_id, blocked_id), commit=True)
+    except Exception:
+        pass
+
 # --- دالة إرسال دعوة اللعب من بروفايل اللاعب ---
 def _is_invite_muted(muter_id, muted_id):
     import datetime
@@ -3568,6 +3640,10 @@ async def send_game_invite(c: types.CallbackQuery):
 
     if sender_id == target_id:
         await c.answer("🚫 لا يمكنك دعوة نفسك!", show_alert=True)
+        return
+
+    if _is_user_blocked(target_id, sender_id):
+        await c.answer("⛔ هذا اللاعب حظرك. لا يمكنك إرسال دعوة له.", show_alert=True)
         return
 
     sender_data = db_query("SELECT player_name FROM users WHERE user_id = %s", (sender_id,))
@@ -3648,6 +3724,39 @@ async def mute_invite_unmute(c: types.CallbackQuery):
         del invite_mutes[key]
     await c.answer("✅ تم إلغاء الكتم. يمكن لهذا اللاعب إرسال دعوات لك مجدداً.", show_alert=True)
     await process_user_search_by_id(c, sender_id)
+
+
+@router.callback_query(F.data.startswith("user_block_"))
+async def user_block_player(c: types.CallbackQuery):
+    """لاعب يحظر لاعباً آخر من جهته (لا يستقبل دعواته)."""
+    try:
+        target_id = int(c.data.replace("user_block_", "").strip())
+    except ValueError:
+        await c.answer("⚠️ خطأ.", show_alert=True)
+        return
+    uid = c.from_user.id
+    if uid == target_id:
+        await c.answer("لا يمكنك حظر نفسك.", show_alert=True)
+        return
+    if _block_user(uid, target_id):
+        await c.answer("✅ تم حظره. لن يستطيع إرسال دعوات لك ولن يظهر في قوائمك.", show_alert=True)
+    else:
+        await c.answer("⚠️ أنت حاظره مسبقاً.", show_alert=True)
+    await process_user_search_by_id(c, target_id)
+
+
+@router.callback_query(F.data.startswith("user_unblock_"))
+async def user_unblock_player(c: types.CallbackQuery):
+    """إلغاء حظر اللاعب (من جهة اللاعب)."""
+    try:
+        target_id = int(c.data.replace("user_unblock_", "").strip())
+    except ValueError:
+        await c.answer("⚠️ خطأ.", show_alert=True)
+        return
+    uid = c.from_user.id
+    _unblock_user(uid, target_id)
+    await c.answer("✅ تم إلغاء الحظر. يمكنه إرسال دعوات لك مجدداً.", show_alert=True)
+    await process_user_search_by_id(c, target_id)
 
 
 @router.callback_query(F.data.startswith("mute_inv_"))
