@@ -255,14 +255,12 @@ def _user_detail_for_admin(u: dict) -> str:
         tg_username = "@" + tg_username
     uname = u.get("username_key") or "—"
     pts = u.get("online_points", 0)
-    insta = u.get("instagram") or "—"
     return (
         f"🆔 الايدي: {uid}\n"
         f"📱 يوزر تليجرام: {tg_username}\n"
         f"📛 الاسم (باللعبة): {name}\n"
         f"👤 يوزر البوت: @{uname}\n"
-        f"⭐ النقاط: {pts}\n"
-        f"📸 انستغرام: {insta}"
+        f"⭐ النقاط: {pts}"
     )
 
 
