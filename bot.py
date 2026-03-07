@@ -7,6 +7,7 @@ from database import init_db
 # استدعاء الراوترات مباشرة من الملفات
 from handlers.admin import router as admin_router
 from handlers.common import router as common_router
+from handlers.reports import router as reports_router
 from handlers.room_2p import router as room_2p_router
 from handlers.room_multi import router as room_multi_router
 from handlers.calc import router as calc_router
@@ -34,6 +35,7 @@ async def main():
     if _use_publish_router:
         dp.include_router(community_publish_router)
     dp.include_router(admin_router)
+    dp.include_router(reports_router)
     dp.include_router(common_router)
     dp.include_router(room_2p_router)
     dp.include_router(room_multi_router)
