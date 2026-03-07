@@ -78,9 +78,10 @@ async def report_start(c: types.CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.startswith("report_who_"))
 async def report_choose_who(c: types.CallbackQuery, state: FSMContext):
+    # report_who_{replay_id}_{reported_id} → ["report", "who", replay_id, reported_id] = 4 أجزاء
     parts = c.data.split("_")
-    if len(parts) < 5:
-        return await c.answer("⚠️ خطأ.", show_alert=True)
+    if len(parts) < 4:
+        return await c.answer("⚠️ خطأ في البيانات.", show_alert=True)
     replay_id = parts[2]
     try:
         reported_id = int(parts[3])
