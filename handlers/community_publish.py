@@ -1293,10 +1293,13 @@ class _FilterPostFallback(BaseFilter):
         if not uid:
             return False
         # إن وُجدت حالة وكانت انتظار رسالة أو خيارات، نترك المعالج الآخر يتولاها — لا نسرق
+        # استثناء حالة الأدمن (محادثة مع لاعب، بث، إلخ) حتى لا تُسرق رسائل المدير
         state = (data.get("state") if isinstance(data, dict) else None) or kwargs.get("state")
         if state:
             current = (await state.get_state()) or ""
             if "help_request" in (current or ""):
+                return False
+            if (current or "").startswith("admin:"):
                 return False
             if current in (PlayerPostStates.waiting_options.state, PlayerPostStates.waiting_message.state):
                 return False
@@ -1323,6 +1326,8 @@ class _FilterPostFallbackChannelMissing(BaseFilter):
         if state:
             current = (await state.get_state()) or ""
             if "help_request" in (current or ""):
+                return False
+            if (current or "").startswith("admin:"):
                 return False
         if time.time() - (_last_post_options_at.get(uid) or 0) > _LAST_POST_OPTIONS_WINDOW:
             return False
