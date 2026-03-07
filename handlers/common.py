@@ -1858,6 +1858,9 @@ def _ensure_help_requests_table():
 @router.message(RoomStates.help_request, F.text)
 async def help_request_text(message: types.Message, state: FSMContext):
     uid = message.from_user.id
+    admin_ids = _get_admin_ids()
+    help_chat_id_raw = os.getenv("HELP_CHAT_ID", "").strip().strip('"').strip("'")
+    logger.info("help_request_text: uid=%s admin_ids=%s HELP_CHAT_ID=%s", uid, list(admin_ids), help_chat_id_raw or "(غير مضبوط)")
     if message.text and message.text.strip().lower() in ("/cancel", "cancel", "الغاء", "إلغاء"):
         await state.clear()
         kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 حسابي", callback_data="my_account")]])
@@ -1867,7 +1870,6 @@ async def help_request_text(message: types.Message, state: FSMContext):
     uname = (user[0].get("username_key") if user else None) or (message.from_user.username or "")
     if uname:
         uname = "@" + str(uname)
-    admin_ids = _get_admin_ids()
     file_text = _build_user_file_text(uid, message.from_user)
     file_text += "\n\n═══════ رسالة طلب المساعدة ═══════\n\n" + (message.text or "")
     _ensure_help_requests_table()
@@ -1879,11 +1881,9 @@ async def help_request_text(message: types.Message, state: FSMContext):
     except Exception:
         pass
     sent_any = False
-    help_chat_id = os.getenv("HELP_CHAT_ID", "").strip().strip('"').strip("'")
+    help_chat_id = help_chat_id_raw
     if not admin_ids and not help_chat_id:
-        logger.warning("help_request: لا يوجد ADMIN_ID ولا HELP_CHAT_ID — ضع ADMIN_ID (رقم تليجرام) أو HELP_CHAT_ID (معرف قناة/مجموعة) في Variables.")
-    else:
-        logger.info("help_request: إرسال إلى الأدمن: %s، HELP_CHAT_ID: %s", list(admin_ids), help_chat_id or "—")
+        logger.warning("help_request: ADMIN_ID و HELP_CHAT_ID غير مضبوطين — ضع ADMIN_ID في Railway Variables (رقم تليجرام للمدير).")
     msg_body = file_text.replace("`", "'")[:3800]
     if len(file_text) > 3800:
         msg_body += "\n\n...(مختصر)"
@@ -1911,18 +1911,31 @@ async def help_request_text(message: types.Message, state: FSMContext):
                 logger.warning("help_request: send to HELP_CHAT_ID %s failed: %s then %s", help_chat_id, e1, e2)
     await state.clear()
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 رجوع", callback_data="my_account")]])
-    await message.answer("✅ تم إرسال طلب المساعدة للإدارة. سنتواصل معك قريباً.", reply_markup=kb)
+    if sent_any:
+        await message.answer("✅ تم إرسال طلب المساعدة للإدارة. المدير يمكنه أيضاً مراجعة جميع الطلبات من: لوحة الإدارة ← طلبات المساعدة.", reply_markup=kb)
+    else:
+        await message.answer(
+            "✅ تم حفظ طلبك.\n\n"
+            "المدير سيراه في لوحة الإدارة ← **طلبات المساعدة**.\n\n"
+            "إن لم يصل إشعار فوري للمدير، تأكد من:\n"
+            "• ضبط **ADMIN_ID** في Railway (Variables) برقم تليجرام للمدير.\n"
+            "• أن المدير ضغط **/start** على البوت مرة واحدة على الأقل.",
+            reply_markup=kb,
+            parse_mode="Markdown"
+        )
 
 
 @router.message(RoomStates.help_request, F.photo | F.voice | F.video | F.document)
 async def help_request_media(message: types.Message, state: FSMContext):
     uid = message.from_user.id
+    admin_ids = _get_admin_ids()
+    help_chat_id_raw = os.getenv("HELP_CHAT_ID", "").strip().strip('"').strip("'")
+    logger.info("help_request_media: uid=%s admin_ids=%s HELP_CHAT_ID=%s", uid, list(admin_ids), help_chat_id_raw or "(غير مضبوط)")
     user = db_query("SELECT player_name, username_key FROM users WHERE user_id = %s", (uid,))
     name = (user[0]["player_name"] if user else None) or message.from_user.full_name or "لاعب"
     uname = (user[0].get("username_key") if user else None) or (message.from_user.username or "")
     if uname:
         uname = "@" + str(uname)
-    admin_ids = _get_admin_ids()
     file_text = _build_user_file_text(uid, message.from_user)
     file_text += "\n\n═══════ رسالة طلب المساعدة ═══════\n\n" + (message.caption or "(مرفق: صورة/صوت/فيديو/ملف)")
     cap_media = f"🆘 طلب مساعدة من {name} {uname} (ايدي: {uid})"
@@ -1935,14 +1948,13 @@ async def help_request_media(message: types.Message, state: FSMContext):
         )
     except Exception:
         pass
-    help_chat_id = os.getenv("HELP_CHAT_ID", "").strip().strip('"').strip("'")
+    help_chat_id = help_chat_id_raw
     if not admin_ids and not help_chat_id:
-        logger.warning("help_request_media: لا يوجد ADMIN_ID ولا HELP_CHAT_ID.")
-    else:
-        logger.info("help_request_media: إرسال إلى الأدمن: %s، HELP_CHAT_ID: %s", list(admin_ids), help_chat_id or "—")
+        logger.warning("help_request_media: ADMIN_ID و HELP_CHAT_ID غير مضبوطين.")
     msg_body = file_text.replace("`", "'")[:3800]
     if len(file_text) > 3800:
         msg_body += "\n\n...(مختصر)"
+    sent_any = False
     for aid in admin_ids:
         try:
             await message.bot.send_message(aid, "🆘 **طلب مساعدة**\n\n" + msg_body, parse_mode="Markdown")
@@ -1955,6 +1967,7 @@ async def help_request_media(message: types.Message, state: FSMContext):
                 await message.bot.send_video(aid, message.video.file_id, caption=caption_long[:1000])
             elif message.document:
                 await message.bot.send_document(aid, message.document.file_id, caption=caption_long[:1000])
+            sent_any = True
         except Exception as e:
             try:
                 await message.bot.send_message(aid, "🆘 طلب مساعدة\n\n" + msg_body.replace("*", "").replace("_", ""))
@@ -1966,6 +1979,7 @@ async def help_request_media(message: types.Message, state: FSMContext):
                     await message.bot.send_video(aid, message.video.file_id, caption=caption_long[:1000])
                 elif message.document:
                     await message.bot.send_document(aid, message.document.file_id, caption=caption_long[:1000])
+                sent_any = True
             except Exception as e2:
                 logger.warning("help_request_media: send to admin %s failed: %s then %s", aid, e, e2)
     if help_chat_id:
@@ -1980,11 +1994,15 @@ async def help_request_media(message: types.Message, state: FSMContext):
                 await message.bot.send_video(ch_id, message.video.file_id, caption=caption_long[:1000])
             elif message.document:
                 await message.bot.send_document(ch_id, message.document.file_id, caption=caption_long[:1000])
+            sent_any = True
         except Exception as e:
             logger.warning("help_request_media: send to HELP_CHAT_ID %s failed: %s", help_chat_id, e)
     await state.clear()
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 رجوع", callback_data="my_account")]])
-    await message.answer("✅ تم إرسال طلب المساعدة للإدارة.", reply_markup=kb)
+    if sent_any:
+        await message.answer("✅ تم إرسال طلب المساعدة للإدارة. المدير يمكنه مراجعة الطلبات من: لوحة الإدارة ← طلبات المساعدة.", reply_markup=kb)
+    else:
+        await message.answer("✅ تم حفظ طلبك. المدير سيراه في لوحة الإدارة ← طلبات المساعدة. (لإشعار فوري للمدير ضع ADMIN_ID في Railway وأن يضغط المدير /start على البوت.)", reply_markup=kb)
 
 
 # --- إنشاء غرفة وإعطاء "رابط" بدل الكود ---
