@@ -1804,17 +1804,12 @@ async def help_request_text(message: types.Message, state: FSMContext):
         admin_ids = set(int(x.strip()) for x in raw.split(",") if x.strip().isdigit())
     file_text = _build_user_file_text(uid, message.from_user)
     file_text += "\n\n═══════ رسالة طلب المساعدة ═══════\n\n" + (message.text or "")
-    msg = f"🆘 **طلب مساعدة** من {name} {uname} (ايدي: {uid})\n\n{message.text or ''}"
     for aid in admin_ids:
         try:
+            msg = "🆘 **طلب مساعدة**\n\n" + file_text.replace("`", "'")[:3800]
+            if len(file_text) > 3800:
+                msg += "\n\n...(مختصر)"
             await message.bot.send_message(aid, msg, parse_mode="Markdown")
-            try:
-                from io import BytesIO
-                bio = BytesIO(file_text.encode("utf-8"))
-                fname = f"help_user_{uid}.txt"
-                await message.bot.send_document(aid, types.BufferedInputFile(bio.getvalue(), filename=fname), caption="📎 ملف اللاعب الكامل مع رسالة طلب المساعدة")
-            except Exception:
-                await message.bot.send_message(aid, "📎 **ملف اللاعب:**\n```\n" + file_text[:3500].replace("`", "'") + "\n```", parse_mode="Markdown")
         except Exception:
             pass
     await state.clear()
@@ -1834,17 +1829,15 @@ async def help_request_media(message: types.Message, state: FSMContext):
     if raw:
         admin_ids = set(int(x.strip()) for x in raw.split(",") if x.strip().isdigit())
     file_text = _build_user_file_text(uid, message.from_user)
+    file_text += "\n\n═══════ رسالة طلب المساعدة ═══════\n\n" + (message.caption or "(مرفق: صورة/صوت/فيديو/ملف)")
     cap_media = f"🆘 طلب مساعدة من {name} {uname} (ايدي: {uid})"
     caption_long = cap_media + "\n\n" + (message.caption or "")
     for aid in admin_ids:
         try:
-            try:
-                from io import BytesIO
-                bio = BytesIO(file_text.encode("utf-8"))
-                fname = f"help_user_{uid}.txt"
-                await message.bot.send_document(aid, types.BufferedInputFile(bio.getvalue(), filename=fname), caption="📎 ملف اللاعب الكامل")
-            except Exception:
-                await message.bot.send_message(aid, "📎 **ملف اللاعب:**\n```\n" + file_text[:3500].replace("`", "'") + "\n```", parse_mode="Markdown")
+            msg = "🆘 **طلب مساعدة**\n\n" + file_text.replace("`", "'")[:3800]
+            if len(file_text) > 3800:
+                msg += "\n\n...(مختصر)"
+            await message.bot.send_message(aid, msg, parse_mode="Markdown")
             if message.photo:
                 await message.bot.send_photo(aid, message.photo[-1].file_id, caption=caption_long[:1000])
             elif message.voice:
