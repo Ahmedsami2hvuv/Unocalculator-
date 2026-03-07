@@ -1780,6 +1780,14 @@ def _get_admin_ids():
 @router.callback_query(F.data == "help_request")
 async def help_request_start(c: types.CallbackQuery, state: FSMContext):
     await state.set_state(RoomStates.help_request)
+    _ensure_help_requests_table()
+    try:
+        db_query(
+            "INSERT INTO help_request_pending (user_id, created_at) VALUES (%s, NOW()) ON CONFLICT (user_id) DO UPDATE SET created_at = NOW()",
+            (c.from_user.id,), commit=True
+        )
+    except Exception:
+        pass
     await c.message.edit_text(
         "🆘 **طلب مساعدة**\n\nاكتب رسالتك للإدارة أو أرسل صورة/صوت.\n\nسيتم إرسالها فوراً للمدير.\n\nلإلغاء اضغط **رجوع**.",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
@@ -1793,6 +1801,7 @@ async def help_request_start(c: types.CallbackQuery, state: FSMContext):
 @router.callback_query(F.data == "help_request_back")
 async def help_request_back(c: types.CallbackQuery, state: FSMContext):
     await state.clear()
+    _clear_pending_help_request(c.from_user.id)
     user_data = db_query("SELECT * FROM users WHERE user_id = %s", (c.from_user.id,))
     if not user_data:
         await c.answer("⚠️ حسابك غير مسجل.")
@@ -1851,8 +1860,45 @@ def _ensure_help_requests_table():
             )""",
             commit=True
         )
+        db_query(
+            """CREATE TABLE IF NOT EXISTS help_request_pending (
+                user_id BIGINT PRIMARY KEY,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )""",
+            commit=True
+        )
     except Exception:
         pass
+
+
+def _has_pending_help_request(uid: int) -> bool:
+    """True إذا المستخدم ضغط «طلب مساعدة» ولم يرسل الرسالة بعد (سجل في DB ليعمل مع عدة workers)."""
+    try:
+        row = db_query(
+            "SELECT 1 FROM help_request_pending WHERE user_id = %s AND created_at > NOW() - INTERVAL '5 minutes'",
+            (uid,)
+        )
+        return bool(row)
+    except Exception:
+        return False
+
+
+def _clear_pending_help_request(uid: int):
+    try:
+        db_query("DELETE FROM help_request_pending WHERE user_id = %s", (uid,), commit=True)
+    except Exception:
+        pass
+
+
+class _FilterPendingHelpRequest(BaseFilter):
+    """يمرّر عندما المستخدم لديه طلب مساعدة معلّق في DB (وليس في حالة FSM) — ليعمل مع عدة workers."""
+    async def __call__(self, event: types.Message, data: dict) -> bool:
+        state = data.get("state")
+        if state:
+            current = await state.get_state()
+            if current == "RoomStates:help_request":
+                return False
+        return _has_pending_help_request(event.from_user.id)
 
 
 @router.message(RoomStates.help_request, F.text)
@@ -1863,6 +1909,7 @@ async def help_request_text(message: types.Message, state: FSMContext):
     logger.info("help_request_text: uid=%s admin_ids=%s HELP_CHAT_ID=%s", uid, list(admin_ids), help_chat_id_raw or "(غير مضبوط)")
     if message.text and message.text.strip().lower() in ("/cancel", "cancel", "الغاء", "إلغاء"):
         await state.clear()
+        _clear_pending_help_request(uid)
         kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 حسابي", callback_data="my_account")]])
         return await message.answer("تم الإلغاء.", reply_markup=kb)
     user = db_query("SELECT player_name, username_key FROM users WHERE user_id = %s", (uid,))
@@ -1910,6 +1957,7 @@ async def help_request_text(message: types.Message, state: FSMContext):
             except Exception as e2:
                 logger.warning("help_request: send to HELP_CHAT_ID %s failed: %s then %s", help_chat_id, e1, e2)
     await state.clear()
+    _clear_pending_help_request(uid)
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 رجوع", callback_data="my_account")]])
     if sent_any:
         await message.answer("✅ تم إرسال طلب المساعدة للإدارة. المدير يمكنه أيضاً مراجعة جميع الطلبات من: لوحة الإدارة ← طلبات المساعدة.", reply_markup=kb)
@@ -1923,6 +1971,12 @@ async def help_request_text(message: types.Message, state: FSMContext):
             reply_markup=kb,
             parse_mode="Markdown"
         )
+
+
+@router.message(_FilterPendingHelpRequest(), F.text)
+async def help_request_text_fallback(message: types.Message, state: FSMContext):
+    """معالج احتياطي عندما تكون الحالة FSM مفقودة (مثلاً worker آخر) لكن المستخدم مسجّل في help_request_pending."""
+    await help_request_text(message, state)
 
 
 @router.message(RoomStates.help_request, F.photo | F.voice | F.video | F.document)
@@ -2003,6 +2057,13 @@ async def help_request_media(message: types.Message, state: FSMContext):
         await message.answer("✅ تم إرسال طلب المساعدة للإدارة. المدير يمكنه مراجعة الطلبات من: لوحة الإدارة ← طلبات المساعدة.", reply_markup=kb)
     else:
         await message.answer("✅ تم حفظ طلبك. المدير سيراه في لوحة الإدارة ← طلبات المساعدة. (لإشعار فوري للمدير ضع ADMIN_ID في Railway وأن يضغط المدير /start على البوت.)", reply_markup=kb)
+    _clear_pending_help_request(uid)
+
+
+@router.message(_FilterPendingHelpRequest(), F.photo | F.voice | F.video | F.document)
+async def help_request_media_fallback(message: types.Message, state: FSMContext):
+    """معالج احتياطي لطلب المساعدة مع مرفق عندما تكون الحالة FSM مفقودة (مثلاً worker آخر)."""
+    await help_request_media(message, state)
 
 
 # --- إنشاء غرفة وإعطاء "رابط" بدل الكود ---
