@@ -495,7 +495,7 @@ async def background_auto_draw(room_id, bot, curr_idx):
         # رسالة منفصلة للعدّ التنازلي (5→4→3→2→1) كي تتحرك دون تعديل رسالة اللعب
         for sec in range(5, 0, -1):
             try:
-                txt = f"⏳ السحب التلقائي خلال {sec} ثواني..."
+                txt = f"⏳ ماعندك ورقه تشتغل راح اسحبك خلال {sec} ثواني..."
                 if countdown_msg_id and countdown_chat_id:
                     await bot.edit_message_text(
                         chat_id=countdown_chat_id,
@@ -508,7 +508,7 @@ async def background_auto_draw(room_id, bot, curr_idx):
                     countdown_chat_id = p_id
             except Exception:
                 if not countdown_msg_id:
-                    msg = await bot.send_message(p_id, f"⏳ السحب التلقائي خلال {sec} ثواني...")
+                    msg = await bot.send_message(p_id, f"⏳ ماعندك ورقه تشتغل راح اسحبك خلال {sec} ثواني..."")
                     countdown_msg_id = msg.message_id
                     countdown_chat_id = p_id
             await asyncio.sleep(1)
