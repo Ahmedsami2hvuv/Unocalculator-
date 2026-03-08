@@ -668,9 +668,40 @@ async def clean_chat_messages(message: types.Message):
 
 
 @router.message(F.text == "🏠 القائمة الرئيسية")
-async def main_menu_button(message: types.Message):
-    """زر القائمة الرئيسية: عرض القائمة الرئيسية (نفس استدعاء القائمة)."""
-    await _clean_then_show_menu(message)
+async def main_menu_button(message: types.Message, state: FSMContext):
+    """زر القائمة الرئيسية: يعمل كزر تحديث — يحدّث البيانات ويعرض القائمة كما لو اللاعب ضغط /start."""
+    uid = message.from_user.id
+    try:
+        db_query("UPDATE users SET username = %s WHERE user_id = %s", (message.from_user.username or "", uid), commit=True)
+    except Exception:
+        pass
+    user = db_query("SELECT * FROM users WHERE user_id = %s", (uid,))
+    if not user:
+        try:
+            db_query(
+                "INSERT INTO users (user_id, username, is_registered) VALUES (%s, %s, FALSE) ON CONFLICT (user_id) DO NOTHING",
+                (uid, message.from_user.username or ""),
+                commit=True,
+            )
+        except Exception:
+            pass
+        user = db_query("SELECT * FROM users WHERE user_id = %s", (uid,))
+    if user and user[0].get("is_banned") in (True, 1, "t", "true"):
+        await message.answer("🚫 تم حظرك من البوت. لا يمكنك استخدام البوت.")
+        return
+    if user and user[0].get("logged_out") in (True, 1, "t", "true"):
+        lang = get_lang(uid)
+        set_lang(uid, lang)
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text=t(uid, "btn_register"), callback_data="auth_register")],
+                [InlineKeyboardButton(text=t(uid, "btn_login"), callback_data="auth_login")],
+            ]
+        )
+        await message.answer(t(uid, "welcome_new"), reply_markup=kb)
+        return
+    name = user[0]["player_name"] if user else message.from_user.full_name
+    await show_main_menu(message, name, user_id=uid, state=state)
 
 
 class FilterInRoom(BaseFilter):
