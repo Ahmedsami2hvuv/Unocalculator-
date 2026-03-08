@@ -695,7 +695,7 @@ async def send_or_update_game_ui(room_id, bot, user_id, remaining_seconds=None, 
 
         controls = []
         if is_my_turn:
-            if room_id in auto_draw_tasks or room.get("is_training"):
+            if room_id in auto_draw_tasks and not room.get("is_training"):
                 controls.append(InlineKeyboardButton(text="➡️ مرر الدور", callback_data=f"pass_{room_id}"))
             if len(hand) == 2 and any(check_validity(c, room['top_card'], room['current_color']) for c in hand):
                 controls.append(InlineKeyboardButton(text="🚨 اونو!", callback_data=f"un_{room_id}"))
@@ -780,7 +780,11 @@ async def refresh_ui_2p(room_id, bot, alert_msg_dict=None):
                     room_id, bot, curr_p["user_id"], curr_hand,
                     room['top_card'], room['current_color'], valid_list
                 ))
-            # وضع التدريب: بدون توقيت — لا turn_timeout ولا auto_draw
+            # تدريب: بدون توقيت 20 ثانية، لكن السحب التلقائي (5 ثواني) يشتغل
+            if not is_playable:
+                cancel_auto_draw_task(room_id)
+                if room_id not in auto_draw_tasks or auto_draw_tasks[room_id].done():
+                    auto_draw_tasks[room_id] = asyncio.create_task(background_auto_draw(room_id, bot, curr_idx))
             return
 
         if not is_playable:
@@ -1797,30 +1801,9 @@ async def process_pass_turn(c: types.CallbackQuery):
         if c.from_user.id != players[curr_idx]['user_id']:
             return await c.answer("❌ مو دورك تمرر!", show_alert=True)
 
-        # وضع التدريب: مرر = سحب ورقة؛ إذا اشتغلت تبقى دورك، وإلا نمرر
+        # وضع التدريب: لا يوجد مرر دور — الزر غير معروض؛ إن ضُغط من رسالة قديمة نرفض
         if room.get("is_training"):
-            deck = ensure_deck_from_discard(room_id, room)
-            p_id = c.from_user.id
-            curr_hand = safe_load(players[curr_idx]['hand'])
-            if deck:
-                new_card = deck.pop(0)
-                curr_hand.append(new_card)
-                db_query("UPDATE room_players SET hand = %s WHERE user_id = %s", (json.dumps(curr_hand), p_id), commit=True)
-                db_query("UPDATE rooms SET deck = %s WHERE room_id = %s", (json.dumps(deck), room_id), commit=True)
-                if check_validity(new_card, room['top_card'], room['current_color']):
-                    await c.answer(f"سحبت {new_card} وتشتغل — دورك لسه!")
-                    await refresh_ui_2p(room_id, c.bot, {p_id: f"📥 سحبت ({new_card}) وتشتغل! العبها أو ورقة ثانية."})
-                    return
-                next_turn = (curr_idx + 1) % 2
-                db_query("UPDATE rooms SET turn_index = %s WHERE room_id = %s", (next_turn, room_id), commit=True)
-                opp_id = players[next_turn]['user_id']
-                alerts = {p_id: f"📥 سحبت ({new_card}) وما اشتغلت — تم تمرير الدور.", opp_id: "➡️ دورك!"}
-                await refresh_ui_2p(room_id, c.bot, alerts)
-            else:
-                next_turn = (curr_idx + 1) % 2
-                db_query("UPDATE rooms SET turn_index = %s WHERE room_id = %s", (next_turn, room_id), commit=True)
-                await refresh_ui_2p(room_id, c.bot, {p_id: "📥 كومة السحب فارغة، تم تمرير الدور."})
-            await c.answer("تم 👍")
+            await c.answer("📚 في التدريب ما يوجد مرر دور — انتظر السحب التلقائي (5 ثواني).", show_alert=True)
             return
 
         next_turn = (curr_idx + 1) % 2
