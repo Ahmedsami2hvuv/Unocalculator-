@@ -1152,8 +1152,8 @@ async def process_upgrade_password(message: types.Message, state: FSMContext):
 
     await message.answer(f"🎉 مبارك! تم تحديث حسابك بنجاح.\n👤 يوزرك: @{username}\n🔑 كلمة السر: {password}")
     
-    # نرجعه للمنيو الرئيسي
-    await show_main_menu(message, name, user_id=message.from_user.id, state=state)
+    # نرجعه للمنيو الرئيسي (مع عرض سؤال التدريب إن كان أول مرة)
+    await _show_training_offer_or_main(message, name, message.from_user.id, state=state, from_registration=True)
 
 
 @router.callback_query(F.data == "play_friends")
@@ -1195,7 +1195,7 @@ async def process_username_step(message: types.Message, state: FSMContext):
 
     await message.answer(f"✅ تم اختيار اليوزر: {username}\n🎉 تم تفعيل حسابك!")
     await state.clear()
-    await show_main_menu(message, p_name, user_id=user_id, state=state)
+    await _show_training_offer_or_main(message, p_name, user_id, state=state, from_registration=True)
 
 @router.message(RoomStates.upgrade_password)
 async def process_password_step(message: types.Message, state: FSMContext):
@@ -1221,7 +1221,7 @@ async def process_password_step(message: types.Message, state: FSMContext):
         p_name = user_info[0]['player_name'] if user_info else "لاعب"
         await message.answer(t(user_id, "reg_success", name=p_name, username=username))
         await state.clear()
-        await show_main_menu(message, p_name, user_id=user_id, state=state)
+        await _show_training_offer_or_main(message, p_name, user_id, state=state, from_registration=True)
     else:
         # حالة التسجيل الجديد: نحفظ اليوزر والباسورد مؤقتاً ونطلب "الاسم"
         await state.update_data(chosen_password=password)
@@ -1247,7 +1247,7 @@ async def process_final_name(message: types.Message, state: FSMContext):
     
     await message.answer(t(user_id, "reg_success", name=name, username=username))
     await state.clear()
-    await (message, name, user_id)
+    await _show_training_offer_or_main(message, name, user_id, state=state, from_registration=True)
     
 
 
@@ -1331,6 +1331,7 @@ async def complete_profile_password_handler(message: types.Message, state: FSMCo
                 pass
             await _join_room_by_code(message, pending_join, user_data[0])
         return
+    await _show_training_offer_or_main(message, name, uid, state=state, from_registration=True)
 
 async def _join_room_by_code(message, code, user_data):
     uid = message.from_user.id
@@ -2920,6 +2921,47 @@ async def process_user_search_by_id(c: types.CallbackQuery, target_id: int, back
     await c.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
     
 
+def _user_asked_training(user_id: int) -> bool:
+    """هل عُرض على اللاعب سؤال التدريب مسبقاً؟"""
+    try:
+        db_query("ALTER TABLE users ADD COLUMN IF NOT EXISTS asked_training_offer BOOLEAN DEFAULT FALSE", commit=True)
+    except Exception:
+        pass
+    row = db_query("SELECT asked_training_offer FROM users WHERE user_id = %s", (user_id,))
+    if not row:
+        return True
+    v = row[0].get("asked_training_offer")
+    return v in (True, 1, "t", "true")
+
+
+async def _show_training_offer_or_main(message, name, user_id, cleanup=False, state=None, from_admin=False, from_registration=False):
+    """بعد إكمال التسجيل: إن لم يُسأل بعد عن التدريب نعرض «هل تريد التدريب»، وإلا القائمة الرئيسية."""
+    if from_registration and not from_admin:
+        if not _user_asked_training(user_id):
+            uid = user_id
+            txt = t(uid, "training_offer_question")
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text=t(uid, "training_btn_yes"), callback_data="training_yes")],
+                [InlineKeyboardButton(text=t(uid, "training_btn_no"), callback_data="training_no")],
+            ])
+            target = message.message if isinstance(message, types.CallbackQuery) else message
+            try:
+                if isinstance(message, types.CallbackQuery):
+                    await message.message.edit_text(txt, reply_markup=kb, parse_mode="Markdown")
+                else:
+                    await target.answer(txt, reply_markup=kb, parse_mode="Markdown")
+                if isinstance(message, types.CallbackQuery):
+                    await message.answer()
+            except Exception:
+                if isinstance(message, types.CallbackQuery):
+                    await message.message.answer(txt, reply_markup=kb, parse_mode="Markdown")
+                    await message.answer()
+                else:
+                    await target.answer(txt, reply_markup=kb, parse_mode="Markdown")
+            return
+    await show_main_menu(message, name, user_id, cleanup=cleanup, state=state, from_admin=from_admin)
+
+
 async def _ask_badge_color_if_needed(c: types.CallbackQuery) -> bool:
     """إذا اللاعب مسجّل وليس له لون شارة، يعرض له اختيار اللون ويرجع True (لا تكمل المعالج). وإلا يرجع False."""
     try:
@@ -3119,6 +3161,45 @@ async def tutorial_done(c: types.CallbackQuery, state: FSMContext):
         pass
     user = db_query("SELECT player_name FROM users WHERE user_id = %s", (uid,))
     name = user[0]['player_name'] if user else c.from_user.full_name
+    await c.answer()
+    await show_main_menu(c.message, name, uid, state=state)
+
+
+@router.callback_query(F.data == "training_yes")
+async def training_yes_cb(c: types.CallbackQuery, state: FSMContext):
+    uid = c.from_user.id
+    try:
+        db_query("UPDATE users SET asked_training_offer = TRUE WHERE user_id = %s", (uid,), commit=True)
+    except Exception:
+        pass
+    txt = t(uid, "training_title") + "\n\n" + t(uid, "training_content")
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=t(uid, "btn_back_short"), callback_data="training_done")]])
+    try:
+        await c.message.edit_text(txt, reply_markup=kb, parse_mode="Markdown")
+    except Exception:
+        await c.message.answer(txt, reply_markup=kb, parse_mode="Markdown")
+    await c.answer()
+
+
+@router.callback_query(F.data == "training_no")
+async def training_no_cb(c: types.CallbackQuery, state: FSMContext):
+    uid = c.from_user.id
+    try:
+        db_query("UPDATE users SET asked_training_offer = TRUE WHERE user_id = %s", (uid,), commit=True)
+    except Exception:
+        pass
+    user = db_query("SELECT player_name FROM users WHERE user_id = %s", (uid,))
+    name = (user[0]['player_name'] if user else None) or c.from_user.full_name
+    await c.answer()
+    await show_main_menu(c.message, name, uid, state=state)
+
+
+@router.callback_query(F.data == "training_done")
+async def training_done_cb(c: types.CallbackQuery, state: FSMContext):
+    """بعد قراءة التدريب من شاشة «نعم أريد التدريب» → القائمة الرئيسية."""
+    uid = c.from_user.id
+    user = db_query("SELECT player_name FROM users WHERE user_id = %s", (uid,))
+    name = (user[0]['player_name'] if user else None) or c.from_user.full_name
     await c.answer()
     await show_main_menu(c.message, name, uid, state=state)
 
@@ -4322,8 +4403,10 @@ async def notify_followers_game_started(player_id, player_name, bot):
 async def show_rules(c: types.CallbackQuery):
     uid = c.from_user.id
     rules_text = t(uid, "rules_text")
-    kb = [[InlineKeyboardButton(text=t(uid, "btn_back_short"), callback_data="home")]]
-    
+    kb = [
+        [InlineKeyboardButton(text=t(uid, "btn_training"), callback_data="training_screen")],
+        [InlineKeyboardButton(text=t(uid, "btn_back_short"), callback_data="home")],
+    ]
     try:
         await c.message.edit_text(
             text=rules_text,
@@ -4332,7 +4415,22 @@ async def show_rules(c: types.CallbackQuery):
         )
     except Exception:
         pass
-    
+    await c.answer()
+
+
+@router.callback_query(F.data == "training_screen")
+async def show_training_screen(c: types.CallbackQuery):
+    """عرض شاشة التدريب من داخل القوانين."""
+    uid = c.from_user.id
+    txt = t(uid, "training_title") + "\n\n" + t(uid, "training_content")
+    kb = [
+        [InlineKeyboardButton(text=t(uid, "btn_back_short"), callback_data="rules")],
+        [InlineKeyboardButton(text=t(uid, "btn_home"), callback_data="home")],
+    ]
+    try:
+        await c.message.edit_text(txt, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="Markdown")
+    except Exception:
+        await c.message.answer(txt, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="Markdown")
     await c.answer()
 
 @router.callback_query(F.data == "bot_info")
