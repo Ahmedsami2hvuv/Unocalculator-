@@ -495,7 +495,7 @@ async def background_auto_draw(room_id, bot, curr_idx):
         # رسالة منفصلة للعدّ التنازلي (5→4→3→2→1) كي تتحرك دون تعديل رسالة اللعب
         for sec in range(5, 0, -1):
             try:
-                txt = f"⏳ ماعندك ورقه تشتغل راح اسحبك خلال {sec} ثواني..."
+                txt = f"⏳ السحب التلقائي خلال {sec} ثواني..."
                 if countdown_msg_id and countdown_chat_id:
                     await bot.edit_message_text(
                         chat_id=countdown_chat_id,
@@ -508,7 +508,7 @@ async def background_auto_draw(room_id, bot, curr_idx):
                     countdown_chat_id = p_id
             except Exception:
                 if not countdown_msg_id:
-                    msg = await bot.send_message(p_id, f"⏳ ماعندك ورقه تشتغل راح اسحبك خلال {sec} ثواني...")
+                    msg = await bot.send_message(p_id, f"⏳ السحب التلقائي خلال {sec} ثواني...")
                     countdown_msg_id = msg.message_id
                     countdown_chat_id = p_id
             await asyncio.sleep(1)
@@ -1327,6 +1327,18 @@ async def handle_play(c: types.CallbackQuery, state: FSMContext):
                 opp_id: f"⚠️ {p_name} حاول يلعب ورقة خطأ وتعاقب."
             }
             return await refresh_ui_2p(room_id, c.bot, alerts)
+
+        # جوكر +4 مسموح فقط إذا ما عندك أي ورقة تشتغل (لون أو رقم مطابق)
+        if "🔥" in card:
+            other_valid = [c for c in hand if c != card and "🔥" not in c and check_validity(c, room['top_card'], room['current_color'])]
+            if other_valid:
+                try:
+                    from i18n import t
+                    msg = t(c.from_user.id, "wild4_only_when_no_valid")
+                except Exception:
+                    msg = "⛔ جوكر +4 تقدر تلعبها فقط إذا ما عندك ورقة تشتغل! عندك ورقة مناسبة."
+                await c.answer(msg, show_alert=True)
+                return await refresh_ui_2p(room_id, c.bot)
 
         hand.pop(idx)
         was_uno_said = str(players[p_idx].get('said_uno', False)).lower() in ['true', '1', 'true']
