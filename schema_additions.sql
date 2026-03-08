@@ -96,3 +96,6 @@ ALTER TABLE replay_sessions ADD COLUMN IF NOT EXISTS badge_earned TEXT DEFAULT N
 
 -- عرض سؤال «هل تريد التدريب» مرة واحدة بعد إكمال التسجيل
 ALTER TABLE users ADD COLUMN IF NOT EXISTS asked_training_offer BOOLEAN DEFAULT FALSE;
+
+-- وضع التدريب: لعب حقيقي مع البوت مع توجيه خطوة بخطوة حتى يفوز اللاعب
+ALTER TABLE rooms ADD COLUMN IF NOT EXISTS is_training BOOLEAN DEFAULT FALSE;
