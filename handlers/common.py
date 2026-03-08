@@ -687,7 +687,11 @@ class FilterInRoom(BaseFilter):
         if state is not None:
             try:
                 s = await state.get_state() or ""
-                # عدم أخذ الرسالة كـ «محادثة غرفة» إذا المستخدم في وضع آخر
+                # عدم أخذ الرسالة كـ «محادثة غرفة» إذا المستخدم في وضع آخر (بما فيه محادثة الأدمن مع لاعب)
+                if (s or "").startswith("admin:"):
+                    return False
+                if "admin_chat_with_user" in (s or ""):
+                    return False
                 if "waiting_message" in s or "waiting_options" in s:
                     return False
                 if "report_upload" in s or "report_more" in s or "report_confirm" in s:
