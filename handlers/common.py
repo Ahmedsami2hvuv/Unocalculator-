@@ -639,7 +639,7 @@ class RoomStates(StatesGroup):
 # مجتمع الأونو والنشر: تم نقله إلى handlers/community_publish.py
 
 persistent_kb = ReplyKeyboardMarkup(
-    keyboard=[[KeyboardButton(text="🏠 القائمة الرئيسية"), KeyboardButton(text="🧹 تنظيف الرسائل")]],
+    keyboard=[[KeyboardButton(text="♻️تحديث♻️"), KeyboardButton(text="🧹 تنظيف الرسائل")]],
     resize_keyboard=True,
     persistent=True
 )
