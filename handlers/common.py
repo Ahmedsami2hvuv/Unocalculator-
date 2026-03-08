@@ -160,6 +160,9 @@ async def channel_subscribe_message_middleware(handler, event: types.Message, da
     user_id = event.from_user.id if event.from_user else None
     if not user_id:
         return await handler(event, data)
+    # الأدمن يتخطى اشتراك القناة حتى تصل رسائله (محادثة مع لاعب، نشر في المجتمع، دردشة الغرفة، إلخ)
+    if user_id in _get_admin_ids():
+        return await handler(event, data)
     # من في وضع «نشر منشور» (خيارات أو انتظار الرسالة) نسمح بمرور رسالته حتى يصل لمعالج النشر
     state = data.get("state")
     if state:
@@ -196,6 +199,10 @@ async def channel_subscribe_message_middleware(handler, event: types.Message, da
 
 async def channel_subscribe_callback_middleware(handler, event: types.CallbackQuery, data: dict):
     if not CHANNEL_ID:
+        return await handler(event, data)
+    user_id = event.from_user.id if event.from_user else None
+    # الأدمن يتخطى اشتراك القناة دائماً
+    if user_id and user_id in _get_admin_ids():
         return await handler(event, data)
     # لا نعترض زر «تحقق» — نترك المعالج يتحقق ويفتح القائمة إن كان مشتركاً
     if getattr(event, "data", None) == "check_channel_sub":
@@ -1943,14 +1950,20 @@ def _clear_pending_help_request(uid: int):
 
 
 class _FilterPendingHelpRequest(BaseFilter):
-    """يمرّر عندما المستخدم لديه طلب مساعدة معلّق في DB (وليس في حالة FSM) — ليعمل مع عدة workers."""
+    """يمرّر عندما المستخدم لديه طلب مساعدة معلّق في DB (وليس في حالة FSM) — ليعمل مع عدة workers.
+    المستخدمون الأدمن لا يُعتبرون أبداً «طلب مساعدة معلّق» حتى لا تُلتقط رسالة النشر للأدمن كطلب مساعدة."""
     async def __call__(self, event: types.Message, **kwargs) -> bool:
+        uid = event.from_user.id if event.from_user else None
+        if not uid:
+            return False
+        if uid in _get_admin_ids():
+            return False
         state = kwargs.get("state")
         if state:
             current = await state.get_state()
             if current == "RoomStates:help_request":
                 return False
-        return _has_pending_help_request(event.from_user.id)
+        return _has_pending_help_request(uid)
 
 
 @router.message(RoomStates.help_request, F.text)
