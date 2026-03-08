@@ -26,7 +26,11 @@ def get_ordered_players(room_id):
     players.sort(key=lambda x: (x.get('join_order') or 0, x['user_id']))
     return players
 
+# عدد أوراق الأونو الرسمي — لا يُنشأ سوى هذه الرزمة عند بداية الجولة؛ عند نفاد السحب نعيد خلط النازلة فقط
+UNO_DECK_TOTAL = 110
+
 def generate_deck():
+    """رزمة أونو 110 ورقة فقط. تُستدعى عند بداية الجولة فقط؛ أثناء اللعب لا ننشئ أوراقاً جديدة."""
     colors = ['🔴', '🔵', '🟡', '🟢']
     deck = []
     for c in colors:
@@ -37,6 +41,7 @@ def generate_deck():
     deck.extend(["🔥 جوكر+4"] * 4)
     deck.append("💧 جوكر+1")
     deck.append("🌊 جوكر+2")
+    assert len(deck) == UNO_DECK_TOTAL, f"الرزمة يجب أن تكون {UNO_DECK_TOTAL} ورقة"
     random.shuffle(deck)
     return deck
 
@@ -76,7 +81,7 @@ def sort_hand(hand):
 
 
 def ensure_deck_from_discard(room_id, room):
-    """إذا كومة السحب فارغة، خذ كل الأوراق النازلة واخلطها لتصبح كومة سحب جديدة. يُرجع قائمة deck."""
+    """إذا كومة السحب فارغة، خذ الأوراق النازلة (ما عدا الورقة العليا على الطاولة) واخلطها لتصبح كومة سحب جديدة. لا ننشئ أوراقاً من خارج الرزمة."""
     deck = safe_load(room.get('deck', '[]'))
     if deck:
         return deck
@@ -169,8 +174,19 @@ async def turn_timeout_multi(room_id, bot, expected_turn):
         curr_hand = safe_load(curr_p['hand'])
         deck = ensure_deck_from_discard(room_id, room)
         if not deck:
-            deck = generate_deck()
-            db_query("UPDATE rooms SET deck = %s WHERE room_id = %s", (json.dumps(deck), room_id), commit=True)
+            next_turn = (curr_idx + direction) % num_players
+            db_query("UPDATE rooms SET turn_index = %s WHERE room_id = %s", (next_turn, room_id), commit=True)
+            turn_timers.pop(room_id, None)
+            cd_del = countdown_msgs.pop(room_id, None)
+            if cd_del:
+                try: await bot.delete_message(cd_del['chat_id'], cd_del['msg_id'])
+                except: pass
+            msgs = {curr_p['user_id']: "⏰ انتهى وقتك! كومة السحب فارغة فمرّ دورك."}
+            for op in players:
+                if op['user_id'] != curr_p['user_id']:
+                    msgs[op['user_id']] = f"⏰ {p_name} ما لعب بالوقت! مرّ دوره."
+            await refresh_ui_multi(room_id, bot, msgs)
+            return
         new_card = deck.pop(0)
         curr_hand.append(new_card)
         next_turn = (curr_idx + direction) % num_players
@@ -219,21 +235,15 @@ async def challenge_timeout_multi(room_id, bot, victim_user_id, chosen_color, ch
         direction = room.get('direction') or 1
         p_idx = room['turn_index']
         victim_idx = (p_idx + direction) % num_players
-        deck = safe_load(room['deck'])
+        deck = ensure_deck_from_discard(room_id, room)
         if not deck:
-            discard = safe_load(room['discard_pile'])
-            if discard:
-                deck = discard
-                random.shuffle(deck)
-                db_query("UPDATE rooms SET discard_pile = '[]' WHERE room_id = %s", (room_id,), commit=True)
-            else:
-                deck = generate_deck()
+            deck = []  # لا ننشئ أوراقاً جديدة
         v_hand = safe_load(players[victim_idx]['hand'])
         for _ in range(4):
             if deck: v_hand.append(deck.pop(0))
         db_query("UPDATE room_players SET hand = %s WHERE user_id = %s", (json.dumps(v_hand), players[victim_idx]['user_id']), commit=True)
         next_turn = (p_idx + direction * 2) % num_players
-        db_query("UPDATE rooms SET deck = %s, turn_index = %s, current_color = %s, top_card = %s WHERE room_id = %s", (json.dumps(deck), next_turn, chosen_color, f"🔥 جوكر+4 {chosen_color}", room_id), commit=True)
+        db_query("UPDATE rooms SET deck = %s, turn_index = %s, current_color = %s, top_card = %s WHERE room_id = %s", (json.dumps(deck or []), next_turn, chosen_color, f"🔥 جوكر+4 {chosen_color}", room_id), commit=True)
         alerts = {}
         alerts[players[p_idx]['user_id']] = "⏰ الخصم ما رد بالوقت! قبل السحب تلقائياً!"
         alerts[players[victim_idx]['user_id']] = "⏰ انتهى الوقت! قبلت السحب تلقائياً وسحبت 4 ورقات."
@@ -294,9 +304,9 @@ async def color_timeout_multi(room_id, bot, user_id):
             except: pass
             return
 
+        # لا ننشئ أوراقاً جديدة؛ كومة السحب تُعبّى فقط من إعادة خلط النازلة (ensure_deck_from_discard)
         if not deck:
-            deck = generate_deck()
-            db_query("UPDATE rooms SET deck = %s WHERE room_id = %s", (json.dumps(deck), room_id), commit=True)
+            deck = []
 
         penalty = 1 if "💧" in card else (2 if "🌊" in card else 0)
         if penalty > 0:
@@ -375,6 +385,11 @@ async def refresh_ui_multi(room_id, bot, alert_msg_dict=None):
                 current_score = p_check.get('points') or 0
                 new_total_score = current_score + round_points
                 db_query("UPDATE room_players SET points = %s WHERE room_id = %s AND user_id = %s", (new_total_score, room_id, p_check['user_id']), commit=True)
+                # تراكم نقاط الفوز في الحساب الشخصي (حسابي + الإحصاء)
+                winner_uid = p_check['user_id']
+                row = db_query("SELECT online_points FROM users WHERE user_id = %s", (winner_uid,))
+                cur_online = (row[0]['online_points'] or 0) if row else 0
+                db_query("UPDATE users SET online_points = %s WHERE user_id = %s", (cur_online + round_points, winner_uid), commit=True)
                 p_name = p_check.get('player_name') or "لاعب"
 
                 if score_limit > 0 and new_total_score >= score_limit:
@@ -422,17 +437,23 @@ async def refresh_ui_multi(room_id, bot, alert_msg_dict=None):
         if not any(check_validity(c, room['top_card'], room['current_color']) for c in curr_hand):
             deck = ensure_deck_from_discard(room_id, room)
             if not deck:
-                deck = generate_deck()
-                db_query("UPDATE rooms SET deck = %s WHERE room_id = %s", (json.dumps(deck), room_id), commit=True)
-            new_card = deck.pop(0)
-            curr_hand.append(new_card)
-            is_playable = check_validity(new_card, room['top_card'], room['current_color'])
+                room = db_query("SELECT * FROM rooms WHERE room_id = %s", (room_id,))[0]
+                deck = ensure_deck_from_discard(room_id, room)
+            new_card = deck.pop(0) if deck else None
+            if new_card is not None:
+                curr_hand.append(new_card)
+            is_playable = check_validity(new_card, room['top_card'], room['current_color']) if new_card else False
             next_turn = curr_idx if is_playable else (curr_idx + direction) % num_players
             db_query("UPDATE room_players SET hand = %s WHERE user_id = %s", (json.dumps(curr_hand), curr_p['user_id']), commit=True)
-            db_query("UPDATE rooms SET deck = %s, turn_index = %s WHERE room_id = %s", (json.dumps(deck), next_turn, room_id), commit=True)
+            db_query("UPDATE rooms SET deck = %s, turn_index = %s WHERE room_id = %s", (json.dumps(deck or []), next_turn, room_id), commit=True)
             p_name = curr_p.get('player_name') or "لاعب"
             msgs = {}
-            if is_playable:
+            if new_card is None:
+                msgs[curr_p['user_id']] = "📥 كومة السحب فارغة فمرّ دورك."
+                for op in players:
+                    if op['user_id'] != curr_p['user_id']:
+                        msgs[op['user_id']] = f"📥 {p_name} ما سحب (كومة السحب فارغة) والدور عبر"
+            elif is_playable:
                 msgs[curr_p['user_id']] = f"📥 سحبت ({new_card}) وتگدر تلعبها 👍"
                 for op in players:
                     if op['user_id'] != curr_p['user_id']:
@@ -600,7 +621,11 @@ async def handle_play_multi(c: types.CallbackQuery, state: FSMContext):
                 h_prev_group = h_group
                 if h_count == 3: kb_list.append(hand_row); hand_row = []; h_count = 0
             if hand_row: kb_list.append(hand_row)
-            await c.message.edit_text("🎨 اختر اللون الجديد:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_list))
+            hand_text = "، ".join(hand) if hand else "—"
+            await c.message.edit_text(
+                f"🎨 اختر اللون الجديد:\n\n🃏 أوراقك: {hand_text}",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_list)
+            )
             await state.set_state(MultiGameStates.choosing_color)
             db_query("UPDATE rooms SET discard_pile = %s WHERE room_id = %s", (json.dumps(discard_pile), room_id), commit=True)
             pending_color_data[room_id] = {'card_played': card, 'p_idx': p_idx, 'prev_color': room['current_color']}
