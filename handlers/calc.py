@@ -266,16 +266,17 @@ async def save_loser_pts(callback: types.CallbackQuery, state: FSMContext):
 async def finish_round_final(callback: types.CallbackQuery, state: FSMContext):
     state_data = await state.get_data()
     d = state_data.get('calc_data', {})
+    # مجموع أوراق الخاسرين = كلها تروح للفائز فقط (قانون الأونو)
     sum_pts = sum(d['temp_round'].values())
-    for p, pts in d['temp_round'].items():
-        d['scores'][p] += pts
+    # الخاسرون لا يضاف لهم شيء؛ نقاط ورقتهم محسوبة للفائز فقط
     d['scores'][d['current_winner']] += sum_pts
     res = f"📝 **نتائج الجولة:**\n"
     for p, s in d['scores'].items():
         if p == d['current_winner']:
             res += f"👤 {p}: `{s}` (+{sum_pts} 🏆)\n"
         else:
-            res += f"👤 {p}: `{s}` (+{d['temp_round'][p]})\n"
+            # عرض ورقة الخاسر للتوضيح فقط (ذهبت للفائز)
+            res += f"👤 {p}: `{s}` (ورقه {d['temp_round'].get(p, 0)} → للفائز)\n"
     if any(s >= d['ceiling'] for s in d['scores'].values()):
         fw = max(d['scores'], key=d['scores'].get)
         total_win_points = d['scores'][fw]
