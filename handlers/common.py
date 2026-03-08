@@ -683,6 +683,9 @@ class FilterInRoom(BaseFilter):
         if not isinstance(data, dict):
             data = {}
         user_id = getattr(getattr(event, "from_user", None), "id", None) or 0
+        # رسائل الأدمن لا تُعتبر أبداً «دردشة غرفة» — حتى لو داخل غرفة، لا نذيعها ولا نحذفها (محادثة مع لاعب، نشر، إلخ)
+        if user_id in _get_admin_ids():
+            return False
         state = data.get("state")
         if state is not None:
             try:
@@ -790,6 +793,16 @@ async def _send_media_copy(bot, chat_id: int, message: types.Message, sender_nam
 @router.message(FilterInRoom())
 async def room_chat_broadcast(message: types.Message, state: FSMContext):
     """نظام محادثة الغرفة: أي رسالة (نص، صورة، صوت، فيديو، ملصق، ...) من لاعب داخل الغرفة تُذاع للباقين وتُحذف بعد 10 ثوانٍ."""
+    # حماية إضافية: لا نذيع ولا نحذف أبداً رسائل الأدمن أو من في وضع النشر/محادثة
+    uid = message.from_user.id if message.from_user else 0
+    if uid in _get_admin_ids():
+        return
+    try:
+        s = await state.get_state() or ""
+        if "waiting_message" in s or "waiting_options" in s or "admin_chat_with_user" in (s or ""):
+            return
+    except Exception:
+        pass
     if message.text and (message.text.strip().startswith("/") and message.text.strip().lower() != "/start"):
         return
     if not message.text and not message.photo and not message.voice and not message.video and not message.animation and not message.sticker and not message.document and not message.audio and not message.video_note:
@@ -1780,20 +1793,24 @@ async def my_reports_list(c: types.CallbackQuery):
 
 def _get_admin_ids():
     """جلب قائمة معرفات الأدمن من متغيرات البيئة (ADMIN_ID أو ADMIN_IDS).
-    يدعم: 123456789 أو \"123456789\" أو 111,222,333
+    يدعم: 123456789 أو \"123456789\" أو 111,222,333 (حتى مع مسافات أو رموز زائدة من Railway).
     ملاحظة: المدير يجب أن يكون قد ضغط /start على البوت مرة واحدة حتى يستطيع البوت إرسال رسائل له."""
     ids = set()
     for key in ("ADMIN_ID", "ADMIN_IDS", "ADMIN_TELEGRAM_ID"):
         raw = os.getenv(key, "")
         if raw is None:
             continue
-        raw = str(raw).strip().strip('"').strip("'").strip()
+        raw = str(raw).strip().strip('"').strip("'").replace("\\", "").strip()
         if not raw:
             continue
         for x in raw.split(","):
-            x = str(x).strip().strip('"').strip("'")
-            if x.isdigit():
-                ids.add(int(x))
+            # إزالة أي شيء غير الأرقام لتفادي مشاكل الاقتباس أو المسافات من Railway
+            cleaned = "".join(c for c in str(x).strip() if c.isdigit())
+            if cleaned:
+                try:
+                    ids.add(int(cleaned))
+                except ValueError:
+                    pass
     return ids
 
 
