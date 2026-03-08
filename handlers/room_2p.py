@@ -14,49 +14,6 @@ async def _send_message_then_delete(bot, chat_id, text, delete_after_seconds=5, 
     return await _fn(bot, chat_id, text, delete_after_seconds=delete_after_seconds, **kwargs)
 
 
-def _training_reason(card, top_card, current_color):
-    """سبب إمكانية لعب الورقة (للوضع التدريب)."""
-    if any(x in card for x in ["🌈", "🔥", "💧", "🌊"]):
-        return "جوكر (تقدر تلعبها أي وقت)"
-    parts = card.split()
-    top_parts = top_card.split()
-    if len(parts) >= 2 and parts[0] in ("🔴", "🟡", "🟢", "🔵"):
-        if parts[0] == current_color or (current_color == "ANY"):
-            return "نفس اللون"
-        if len(top_parts) >= 2 and parts[1] == top_parts[1]:
-            return "نفس الرقم/الرمز"
-    return "مطابقة"
-
-
-async def _send_training_hint(room_id, bot, human_id, room, players, curr_idx):
-    """إرسال توجيه التدريب للاعب عندما دوره في وضع التدريب."""
-    try:
-        from i18n import t
-        curr_p = players[curr_idx]
-        hand = safe_load(curr_p['hand'])
-        top_card = room['top_card']
-        current_color = room['current_color']
-        valid = [c for c in hand if check_validity(c, top_card, current_color)]
-        hand_str = "، ".join(hand) if hand else "—"
-        if valid:
-            lines = []
-            for c in valid:
-                reason = _training_reason(c, top_card, current_color)
-                if "جوكر" in reason or "أي وقت" in reason:
-                    lines.append(t(human_id, "training_hint_valid_reason_wild", card=c))
-                elif "لون" in reason:
-                    lines.append(t(human_id, "training_hint_valid_reason_color", card=c))
-                else:
-                    lines.append(t(human_id, "training_hint_valid_reason_value", card=c))
-            valid_line = "\n".join(lines)
-        else:
-            valid_line = t(human_id, "training_hint_no_valid")
-        txt = t(human_id, "training_hint_intro", top_card=top_card, hand=hand_str, valid_line=valid_line)
-        await bot.send_message(human_id, txt, parse_mode="Markdown")
-    except Exception as e:
-        print(f"Training hint error: {e}")
-
-
 from collections import Counter
 
 ########## المتغيرات العامة ##########
@@ -698,24 +655,27 @@ async def send_or_update_game_ui(room_id, bot, user_id, remaining_seconds=None, 
         if alert_text:
             info_text += f"\n──────────────\n📢 {alert_text}"
 
-        # 2. بناء شريط الوقت (🟢🟡🔴) - حافظنا على منطقك القديم
+        # 2. بناء شريط الوقت (🟢🟡🔴) — في وضع التدريب لا يوجد توقيت
         if is_my_turn:
-            remaining = remaining_seconds if remaining_seconds is not None else 20
-            total_steps = 10
-            steps_left = (remaining + 1) // 2
-            bar_parts = []
-            for s in range(total_steps):
-                if s < steps_left:
-                    if remaining > 10:
-                        bar_parts.append("🟢")
-                    elif remaining > 5:
-                        bar_parts.append("🟡")
+            if room.get("is_training"):
+                info_text += "\n──────────────\n📚 تدريب — دورك (بدون توقيت) 👍🏻"
+            else:
+                remaining = remaining_seconds if remaining_seconds is not None else 20
+                total_steps = 10
+                steps_left = (remaining + 1) // 2
+                bar_parts = []
+                for s in range(total_steps):
+                    if s < steps_left:
+                        if remaining > 10:
+                            bar_parts.append("🟢")
+                        elif remaining > 5:
+                            bar_parts.append("🟡")
+                        else:
+                            bar_parts.append("🔴")
                     else:
-                        bar_parts.append("🔴")
-                else:
-                    bar_parts.append("⚫")
-            bar = "".join(bar_parts)
-            info_text += f"\n──────────────\n⏳ باقي {remaining} ثانية\n{bar}\n✅ دورك 👍🏻"
+                        bar_parts.append("⚫")
+                bar = "".join(bar_parts)
+                info_text += f"\n──────────────\n⏳ باقي {remaining} ثانية\n{bar}\n✅ دورك 👍🏻"
         else:
             info_text += f"\n──────────────\n⏳ مو دورك"
 
@@ -735,7 +695,7 @@ async def send_or_update_game_ui(room_id, bot, user_id, remaining_seconds=None, 
 
         controls = []
         if is_my_turn:
-            if room_id in auto_draw_tasks:
+            if room_id in auto_draw_tasks or room.get("is_training"):
                 controls.append(InlineKeyboardButton(text="➡️ مرر الدور", callback_data=f"pass_{room_id}"))
             if len(hand) == 2 and any(check_validity(c, room['top_card'], room['current_color']) for c in hand):
                 controls.append(InlineKeyboardButton(text="🚨 اونو!", callback_data=f"un_{room_id}"))
@@ -809,11 +769,19 @@ async def refresh_ui_2p(room_id, bot, alert_msg_dict=None):
             asyncio.create_task(_bot_play_turn_delayed(room_id, bot))
             return
 
-        if room.get("is_training") and curr_p["user_id"] != BOT_USER_ID:
-            asyncio.create_task(_send_training_hint(room_id, bot, curr_p["user_id"], room, players, curr_idx))
-
         curr_hand = safe_load(curr_p['hand'])
         is_playable = any(check_validity(c, room['top_card'], room['current_color']) for c in curr_hand)
+
+        if room.get("is_training"):
+            if curr_p["user_id"] != BOT_USER_ID:
+                from handlers.training import send_training_plan
+                valid_list = [c for c in curr_hand if check_validity(c, room['top_card'], room['current_color'])]
+                asyncio.create_task(send_training_plan(
+                    room_id, bot, curr_p["user_id"], curr_hand,
+                    room['top_card'], room['current_color'], valid_list
+                ))
+            # وضع التدريب: بدون توقيت — لا turn_timeout ولا auto_draw
+            return
 
         if not is_playable:
             cancel_auto_draw_task(room_id)
@@ -1834,6 +1802,33 @@ async def process_pass_turn(c: types.CallbackQuery):
         curr_idx = room['turn_index']
         if c.from_user.id != players[curr_idx]['user_id']:
             return await c.answer("❌ مو دورك تمرر!", show_alert=True)
+
+        # وضع التدريب: مرر = سحب ورقة؛ إذا اشتغلت تبقى دورك، وإلا نمرر
+        if room.get("is_training"):
+            deck = ensure_deck_from_discard(room_id, room)
+            p_id = c.from_user.id
+            curr_hand = safe_load(players[curr_idx]['hand'])
+            if deck:
+                new_card = deck.pop(0)
+                curr_hand.append(new_card)
+                db_query("UPDATE room_players SET hand = %s WHERE user_id = %s", (json.dumps(curr_hand), p_id), commit=True)
+                db_query("UPDATE rooms SET deck = %s WHERE room_id = %s", (json.dumps(deck), room_id), commit=True)
+                if check_validity(new_card, room['top_card'], room['current_color']):
+                    await c.answer(f"سحبت {new_card} وتشتغل — دورك لسه!")
+                    await refresh_ui_2p(room_id, c.bot, {p_id: f"📥 سحبت ({new_card}) وتشتغل! العبها أو ورقة ثانية."})
+                    return
+                next_turn = (curr_idx + 1) % 2
+                db_query("UPDATE rooms SET turn_index = %s WHERE room_id = %s", (next_turn, room_id), commit=True)
+                opp_id = players[next_turn]['user_id']
+                alerts = {p_id: f"📥 سحبت ({new_card}) وما اشتغلت — تم تمرير الدور.", opp_id: "➡️ دورك!"}
+                await refresh_ui_2p(room_id, c.bot, alerts)
+            else:
+                next_turn = (curr_idx + 1) % 2
+                db_query("UPDATE rooms SET turn_index = %s WHERE room_id = %s", (next_turn, room_id), commit=True)
+                await refresh_ui_2p(room_id, c.bot, {p_id: "📥 كومة السحب فارغة، تم تمرير الدور."})
+            await c.answer("تم 👍")
+            return
+
         next_turn = (curr_idx + 1) % 2
         db_query("UPDATE rooms SET turn_index = %s WHERE room_id = %s", (next_turn, room_id), commit=True)
         p_name = players[curr_idx].get('player_name') or "لاعب"
