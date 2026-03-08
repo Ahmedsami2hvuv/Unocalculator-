@@ -34,19 +34,20 @@ def _get_plan_advice(user_id, hand, valid, top_card, current_color):
         return t(user_id, "training_plan_no_valid")
     has_skip = any("🚫" in c for c in valid)
     has_reverse = any("🔄" in c for c in valid)
-    has_plus2 = any("+2" in c for c in valid)
+    has_plus2 = any("+2" in c and c.split()[0] in ("🔴", "🟡", "🟢", "🔵") for c in valid)
+    has_joker_draw = any(x in " ".join(valid) for x in ["💧", "🌊"])  # جوكر +1 أو +2: أي وقت، خصم يسحب، الدور يرجع لك
     has_same_color = any(
         _reason_for_card(c, top_card, current_color) == "color" for c in valid
     )
-    has_wild = any(
-        x in " ".join(valid) for x in ["🌈", "🔥", "💧", "🌊"]
-    )
+    has_wild = any(x in " ".join(valid) for x in ["🌈", "🔥"])
     if has_skip:
         return t(user_id, "training_plan_skip")
     if has_reverse:
         return t(user_id, "training_plan_reverse")
     if has_plus2:
         return t(user_id, "training_plan_plus2")
+    if has_joker_draw:
+        return t(user_id, "training_plan_joker_draw")
     if has_same_color:
         return t(user_id, "training_plan_same_color")
     if has_wild:
@@ -54,11 +55,14 @@ def _get_plan_advice(user_id, hand, valid, top_card, current_color):
     return t(user_id, "training_plan_default")
 
 
+# آخر رسالة تدريب لكل لاعب — نحذفها قبل إرسال جديدة أو نحدّثها حتى لا تتكدس
+_training_msg_ids = {}
+
+
 async def send_training_plan(room_id, bot, human_id, hand, top_card, current_color, valid_list):
     """
-    إرسال خطة لعب + الأورقة النازلة + أوراق اللاعب + الأوراق المتاحة مع أسبابها.
-    يُستدعى من room_2p فقط عندما الغرفة is_training ودور اللاعب (الإنسان).
-    لا يستخدم أي توقيت — التوقيت يُلغى في room_2p لغرف التدريب.
+    إرسال خطة لعب + الأورقة النازلة + أوراق اللاعب + الأوراق المتاحة.
+    نحذف رسالة التدريب السابقة (إن وُجدت) ثم نرسل رسالة جديدة، أو نحدّث نفس الرسالة إن أمكن.
     """
     try:
         from i18n import t
@@ -89,7 +93,14 @@ async def send_training_plan(room_id, bot, human_id, hand, top_card, current_col
         valid_line=valid_line,
     )
     try:
-        await bot.send_message(human_id, txt, parse_mode="Markdown")
+        prev_id = _training_msg_ids.pop(human_id, None)
+        if prev_id:
+            try:
+                await bot.delete_message(human_id, prev_id)
+            except Exception:
+                pass
+        msg = await bot.send_message(human_id, txt, parse_mode="Markdown")
+        _training_msg_ids[human_id] = msg.message_id
     except Exception as e:
         print(f"Training send error: {e}")
 
