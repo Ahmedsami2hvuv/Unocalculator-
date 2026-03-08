@@ -18,19 +18,22 @@ from database import db_query
 router = Router(name="admin")
 
 def _admin_ids():
-    """نفس منطق common._get_admin_ids: إزالة علامات الاقتباس لدعم Railway Variables."""
+    """نفس منطق common._get_admin_ids: إزالة علامات الاقتباس والرموز الزائدة لدعم Railway Variables."""
     ids = set()
     for key in ("ADMIN_ID", "ADMIN_IDS", "ADMIN_TELEGRAM_ID"):
         raw = os.getenv(key, "")
         if raw is None:
             continue
-        raw = str(raw).strip().strip('"').strip("'").strip()
+        raw = str(raw).strip().strip('"').strip("'").replace("\\", "").strip()
         if not raw:
             continue
         for x in raw.split(","):
-            x = str(x).strip().strip('"').strip("'")
-            if x.isdigit():
-                ids.add(int(x))
+            cleaned = "".join(c for c in str(x).strip() if c.isdigit())
+            if cleaned:
+                try:
+                    ids.add(int(cleaned))
+                except ValueError:
+                    pass
     return ids
 
 def is_admin(user_id: int) -> bool:
