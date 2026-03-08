@@ -36,6 +36,8 @@ def _get_plan_advice(user_id, hand, valid, top_card, current_color):
     has_reverse = any("🔄" in c for c in valid)
     has_plus2 = any("+2" in c and c.split()[0] in ("🔴", "🟡", "🟢", "🔵") for c in valid)
     has_joker_draw = any(x in " ".join(valid) for x in ["💧", "🌊"])  # جوكر +1 أو +2: أي وقت، خصم يسحب، الدور يرجع لك
+    has_wild4 = any("🔥" in c for c in valid)
+    other_valid_no_wild4 = [c for c in valid if "🔥" not in c]
     has_same_color = any(
         _reason_for_card(c, top_card, current_color) == "color" for c in valid
     )
@@ -48,6 +50,10 @@ def _get_plan_advice(user_id, hand, valid, top_card, current_color):
         return t(user_id, "training_plan_plus2")
     if has_joker_draw:
         return t(user_id, "training_plan_joker_draw")
+    if has_wild4:
+        if other_valid_no_wild4:
+            return t(user_id, "training_plan_wild4_has_other")
+        return t(user_id, "training_plan_wild4_ok")
     if has_same_color:
         return t(user_id, "training_plan_same_color")
     if has_wild:
