@@ -93,3 +93,6 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS badge_streak_started_at TIMESTAMP DEF
 ALTER TABLE users ADD COLUMN IF NOT EXISTS badge_last_opponent_id BIGINT DEFAULT NULL;
 -- عمود اختياري في replay_sessions لعرض زر «انشر شارتك» بعد الحصول على شارة
 ALTER TABLE replay_sessions ADD COLUMN IF NOT EXISTS badge_earned TEXT DEFAULT NULL;
+
+-- عرض سؤال «هل تريد التدريب» مرة واحدة بعد إكمال التسجيل
+ALTER TABLE users ADD COLUMN IF NOT EXISTS asked_training_offer BOOLEAN DEFAULT FALSE;
