@@ -667,9 +667,9 @@ async def clean_chat_messages(message: types.Message):
     await _clean_then_show_menu(message)
 
 
-@router.message(F.text == "🏠 القائمة الرئيسية")
+@router.message(F.text == "♻️تحديث♻️")
 async def main_menu_button(message: types.Message, state: FSMContext):
-    """زر القائمة الرئيسية: يعمل كزر تحديث — يحدّث البيانات ويعرض القائمة كما لو اللاعب ضغط /start."""
+    """زر ♻️تحديث♻️: يحدّث البيانات ويعرض القائمة كما لو اللاعب ضغط /start."""
     uid = message.from_user.id
     try:
         db_query("UPDATE users SET username = %s WHERE user_id = %s", (message.from_user.username or "", uid), commit=True)
