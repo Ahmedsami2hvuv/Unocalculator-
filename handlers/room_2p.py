@@ -14,6 +14,49 @@ async def _send_message_then_delete(bot, chat_id, text, delete_after_seconds=5, 
     return await _fn(bot, chat_id, text, delete_after_seconds=delete_after_seconds, **kwargs)
 
 
+def _training_reason(card, top_card, current_color):
+    """سبب إمكانية لعب الورقة (للوضع التدريب)."""
+    if any(x in card for x in ["🌈", "🔥", "💧", "🌊"]):
+        return "جوكر (تقدر تلعبها أي وقت)"
+    parts = card.split()
+    top_parts = top_card.split()
+    if len(parts) >= 2 and parts[0] in ("🔴", "🟡", "🟢", "🔵"):
+        if parts[0] == current_color or (current_color == "ANY"):
+            return "نفس اللون"
+        if len(top_parts) >= 2 and parts[1] == top_parts[1]:
+            return "نفس الرقم/الرمز"
+    return "مطابقة"
+
+
+async def _send_training_hint(room_id, bot, human_id, room, players, curr_idx):
+    """إرسال توجيه التدريب للاعب عندما دوره في وضع التدريب."""
+    try:
+        from i18n import t
+        curr_p = players[curr_idx]
+        hand = safe_load(curr_p['hand'])
+        top_card = room['top_card']
+        current_color = room['current_color']
+        valid = [c for c in hand if check_validity(c, top_card, current_color)]
+        hand_str = "، ".join(hand) if hand else "—"
+        if valid:
+            lines = []
+            for c in valid:
+                reason = _training_reason(c, top_card, current_color)
+                if "جوكر" in reason or "أي وقت" in reason:
+                    lines.append(t(human_id, "training_hint_valid_reason_wild", card=c))
+                elif "لون" in reason:
+                    lines.append(t(human_id, "training_hint_valid_reason_color", card=c))
+                else:
+                    lines.append(t(human_id, "training_hint_valid_reason_value", card=c))
+            valid_line = "\n".join(lines)
+        else:
+            valid_line = t(human_id, "training_hint_no_valid")
+        txt = t(human_id, "training_hint_intro", top_card=top_card, hand=hand_str, valid_line=valid_line)
+        await bot.send_message(human_id, txt, parse_mode="Markdown")
+    except Exception as e:
+        print(f"Training hint error: {e}")
+
+
 from collections import Counter
 
 ########## المتغيرات العامة ##########
@@ -766,6 +809,9 @@ async def refresh_ui_2p(room_id, bot, alert_msg_dict=None):
             asyncio.create_task(_bot_play_turn_delayed(room_id, bot))
             return
 
+        if room.get("is_training") and curr_p["user_id"] != BOT_USER_ID:
+            asyncio.create_task(_send_training_hint(room_id, bot, curr_p["user_id"], room, players, curr_idx))
+
         curr_hand = safe_load(curr_p['hand'])
         is_playable = any(check_validity(c, room['top_card'], room['current_color']) for c in curr_hand)
 
@@ -1042,6 +1088,12 @@ async def bot_play_turn(room_id, bot):
             current_color = room['current_color']
 
         valid = [c for c in bot_hand if check_validity(c, top_card, current_color)]
+        if room.get("is_training") and valid:
+            # في وضع التدريب: لا نلعب ورقة تجعل البوت يربح (يده تصبح فارغة)
+            winning_plays = [c for c in valid if len(bot_hand) == 1]
+            valid_non_win = [c for c in valid if c not in winning_plays]
+            if valid_non_win:
+                valid = valid_non_win
         if not valid:
             no_card_msg = None
             try:
@@ -1334,7 +1386,14 @@ async def handle_play(c: types.CallbackQuery, state: FSMContext):
             db_query("UPDATE rooms SET discard_pile = %s, top_card = %s, current_color = %s WHERE room_id = %s",
                 (json.dumps(discard_pile), card, card.split()[0], room_id), commit=True)
             db_query("DELETE FROM room_players WHERE room_id = %s", (room_id,), commit=True)
+            is_training = bool(room.get("is_training"))
             win_text = f"🏆 **{p_name} فاز بالجولة!** 🏆\n📊 حصل على {points} نقطة."
+            if is_training:
+                try:
+                    from i18n import t
+                    win_text = t(c.from_user.id, "training_win_congrats") + "\n\n" + win_text
+                except Exception:
+                    pass
             from handlers.common import create_replay_session, build_game_end_keyboard
             winner_id = c.from_user.id
             opp_id = players[opp_idx]['user_id']
