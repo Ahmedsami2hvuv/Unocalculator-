@@ -299,11 +299,14 @@ async def turn_timeout_2p(room_id, bot, expected_turn):
                           curr_hand = safe_load(curr_p['hand'])
 
                           # --- تنفيذ المنطق: عقوبة ضياع الوقت ---
-                          deck = safe_load(room['deck'])
+                          deck = ensure_deck_from_discard(room_id, room)
                           if not deck:
-                              deck = generate_h2o_deck()
-                              random.shuffle(deck)
-
+                              next_turn = (expected_turn + 1) % 2
+                              db_query("UPDATE rooms SET turn_index = %s WHERE room_id = %s", (next_turn, room_id), commit=True)
+                              turn_timers.pop(room_id, None)
+                              msgs = {p_id: "⏰ انتهى وقتك! كومة السحب فارغة فمرّ دورك.", opp_id: f"⏰ {p_name} مرّ دوره (كومة السحب فارغة)."}
+                              await refresh_ui_2p(room_id, bot, msgs)
+                              return
                           penalty_card = deck.pop(0)
                           curr_hand.append(penalty_card)
 
@@ -437,13 +440,7 @@ async def color_timeout_2p(room_id, bot, player_id):
 
         if penalty > 0:
             if not deck:
-                discard = safe_load(room['discard_pile'])
-                if discard:
-                    deck = discard
-                    random.shuffle(deck)
-                    db_query("UPDATE rooms SET discard_pile = '[]' WHERE room_id = %s", (room_id,), commit=True)
-                else:
-                    deck = generate_h2o_deck()
+                deck = []  # لا ننشئ أوراقاً جديدة
             opp_h = safe_load(players[opp_idx]['hand'])
             for _ in range(penalty):
                 if deck:
@@ -535,10 +532,10 @@ async def background_auto_draw(room_id, bot, curr_idx):
 
         deck = ensure_deck_from_discard(room_id, room)
         if not deck:
-            deck = generate_h2o_deck()
-            random.shuffle(deck)
-            db_query("UPDATE rooms SET deck = %s WHERE room_id = %s", (json.dumps(deck), room_id), commit=True)
-
+            next_turn = (curr_idx + 1) % 2
+            db_query("UPDATE rooms SET turn_index = %s WHERE room_id = %s", (next_turn, room_id), commit=True)
+            await refresh_ui_2p(room_id, bot, {p_id: "📥 كومة السحب فارغة فمرّ دورك."})
+            return
         curr_hand = safe_load(players[curr_idx]['hand'])
         new_card = deck.pop(0)
         curr_hand.append(new_card)
@@ -895,9 +892,7 @@ async def handle_colored_draw2_action(c, room_id, p_idx, opp_id, opp_idx, card, 
     p_name = players[p_idx].get('player_name') or "لاعب"
     deck = ensure_deck_from_discard(room_id, room)
     if not deck:
-        deck = generate_h2o_deck()
-        random.shuffle(deck)
-        db_query("UPDATE rooms SET deck = %s WHERE room_id = %s", (json.dumps(deck), room_id), commit=True)
+        deck = []
     opp_hand = safe_load(players[opp_idx]['hand'])
     drawn_cards = []
     for _ in range(2):
@@ -1011,9 +1006,7 @@ async def bot_play_turn(room_id, bot):
         current_color = room['current_color']
         deck = ensure_deck_from_discard(room_id, room)
         if not deck:
-            deck = generate_h2o_deck()
-            random.shuffle(deck)
-            db_query("UPDATE rooms SET deck = %s WHERE room_id = %s", (json.dumps(deck), room_id), commit=True)
+            deck = []
 
         opp_hand = safe_load(players[opp_idx]['hand'])
         opp_said_uno = str(players[opp_idx].get('said_uno', False)).lower() in ['true', '1']
