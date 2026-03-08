@@ -851,31 +851,29 @@ async def _send_photo_then_schedule_delete(bot, chat_id, photo_id, delay=3):
     
 ########## دوال الأكشن والأوراق الخاصة ##########
 
-async def handle_draw1_card_action(c, room_id, p_idx, opp_id, opp_idx, card, room, players, alerts):
-    """معالجة جوكر +1 (💧) - كأكشن: يسحب الخصم ورقة واحدة"""
-    next_turn = p_idx # الدور يبقى عند اللاعب
+async def handle_draw1_card_action(c, room_id, p_idx, opp_id, opp_idx, card, room, players, alerts, discard_pile):
+    """جوكر +1 (💧): تلعبها أي وقت، الخصم يسحب ورقة واحدة، والدور يرجع للاعب (2 لاعب)."""
+    next_turn = p_idx  # الدور يبقى عند اللاعب
     p_name = players[p_idx].get('player_name') or "لاعب"
     deck = ensure_deck_from_discard(room_id, room)
     opp_hand = safe_load(players[opp_idx]['hand'])
-
     drawn_cards = []
     for _ in range(1):
         if deck:
             drawn_cards.append(deck.pop(0))
-
     if drawn_cards:
         opp_hand.extend(drawn_cards)
         db_query("UPDATE room_players SET hand = %s WHERE user_id = %s",
             (json.dumps(opp_hand), opp_id), commit=True)
-        db_query("UPDATE rooms SET deck = %s WHERE room_id = %s",
-            (json.dumps(deck), room_id), commit=True)
+        db_query("UPDATE rooms SET deck = %s WHERE room_id = %s", (json.dumps(deck), room_id), commit=True)
         alerts[opp_id] = f"💧 {p_name} لعب جوكر +1 وسحبك ورقة! 🎯"
-    alerts[c.from_user.id] = f"💧 لعبت جوكر +1 وسحبت الخصم ورقة! ✅"
-    db_query("UPDATE rooms SET top_card = %s, current_color = 'ANY' WHERE room_id = %s", (card, room_id), commit=True)
+    alerts[c.from_user.id] = f"💧 لعبت جوكر +1 وسحبت الخصم ورقة! الدور بقى إلك ✅"
+    db_query("UPDATE rooms SET top_card = %s, current_color = %s, discard_pile = %s WHERE room_id = %s",
+        (card, "ANY", json.dumps(discard_pile), room_id), commit=True)
     return next_turn
 
-async def handle_draw2_card_action(c, room_id, p_idx, opp_id, opp_idx, card, room, players, alerts):
-    """معالجة جوكر +2 (🌊) - كأكشن: يسحب الخصم ورقتين"""
+async def handle_draw2_card_action(c, room_id, p_idx, opp_id, opp_idx, card, room, players, alerts, discard_pile):
+    """جوكر +2 (🌊): تلعبها أي وقت، الخصم يسحب ورقتين، والدور يرجع للاعب (2 لاعب)."""
     next_turn = p_idx
     p_name = players[p_idx].get('player_name') or "لاعب"
     deck = ensure_deck_from_discard(room_id, room)
@@ -889,41 +887,34 @@ async def handle_draw2_card_action(c, room_id, p_idx, opp_id, opp_idx, card, roo
             drawn_cards.append(deck.pop(0))
     if drawn_cards:
         opp_hand.extend(drawn_cards)
-    db_query("UPDATE room_players SET hand = %s WHERE user_id = %s", 
-    (json.dumps(opp_hand), opp_id), commit=True)
-    db_query("UPDATE rooms SET deck = %s WHERE room_id = %s", 
-    (json.dumps(deck), room_id), commit=True)
-
+    db_query("UPDATE room_players SET hand = %s WHERE user_id = %s",
+        (json.dumps(opp_hand), opp_id), commit=True)
+    db_query("UPDATE rooms SET deck = %s WHERE room_id = %s", (json.dumps(deck), room_id), commit=True)
     alerts[opp_id] = f"🌊 {p_name} لعب جوكر +2 وسحبك ورقتين! 🎯"
-    alerts[c.from_user.id] = f"🌊 لعبت جوكر +2 وسحبت الخصم ورقتين! ✅"
-    db_query("UPDATE rooms SET top_card = %s, current_color = 'ANY' WHERE room_id = %s", (card, room_id), commit=True)
+    alerts[c.from_user.id] = f"🌊 لعبت جوكر +2 وسحبت الخصم ورقتين! الدور بقى إلك ✅"
+    db_query("UPDATE rooms SET top_card = %s, current_color = %s, discard_pile = %s WHERE room_id = %s",
+        (card, "ANY", json.dumps(discard_pile), room_id), commit=True)
     return next_turn
 
 
-async def handle_colored_draw2_action(c, room_id, p_idx, opp_id, opp_idx, card, room, players, alerts):
-    """معالجة ورقة +2 الملونة - تسحب الخصم ورقتين والدور يبقى للاعب مع تثبيت لون الورقة"""
-    next_turn = p_idx # الدور يبقى عند نفس اللاعب
+async def handle_colored_draw2_action(c, room_id, p_idx, opp_id, opp_idx, card, room, players, alerts, discard_pile):
+    """ورقة +2 الملونة: تسحب الخصم ورقتين والدور يبقى للاعب مع تثبيت اللون."""
+    next_turn = p_idx
     p_name = players[p_idx].get('player_name') or "لاعب"
     deck = ensure_deck_from_discard(room_id, room)
     if not deck:
         deck = []
     opp_hand = safe_load(players[opp_idx]['hand'])
-    drawn_cards = []
     for _ in range(2):
         if not deck:
             room = db_query("SELECT * FROM rooms WHERE room_id = %s", (room_id,))[0]
             deck = ensure_deck_from_discard(room_id, room)
         if deck:
-            drawn_cards.append(deck.pop(0))
-    opp_hand.extend(drawn_cards)
+            opp_hand.append(deck.pop(0))
     card_color = card.split()[0]
-    db_query("UPDATE room_players SET hand = %s WHERE user_id = %s", 
-    (json.dumps(opp_hand), opp_id), commit=True)
-    db_query("""
-    UPDATE rooms 
-    SET top_card = %s, current_color = %s, turn_index = %s, deck = %s 
-    WHERE room_id = %s
-    """, (card, card_color, next_turn, json.dumps(deck), room_id), commit=True)
+    db_query("UPDATE room_players SET hand = %s WHERE user_id = %s", (json.dumps(opp_hand), opp_id), commit=True)
+    db_query("""UPDATE rooms SET top_card = %s, current_color = %s, turn_index = %s, deck = %s, discard_pile = %s WHERE room_id = %s""",
+        (card, card_color, next_turn, json.dumps(deck), json.dumps(discard_pile), room_id), commit=True)
     alerts[opp_id] = f"{card_color} {p_name} لعب +2 ملونة وسحبك ورقتين! 🎯"
     alerts[c.from_user.id] = f"✅ لعبت +2 ملونة، سحبت الخصم وباقي دورك!"
     return next_turn
@@ -1405,22 +1396,25 @@ async def handle_play(c: types.CallbackQuery, state: FSMContext):
         if "🚫" in card or "🔄" in card:
             symbol = "🚫" if "🚫" in card else "🔄"
             next_turn = p_idx
+            db_query("UPDATE rooms SET top_card = %s, current_color = %s, discard_pile = %s, turn_index = %s WHERE room_id = %s",
+                (card, new_color, json.dumps(discard_pile), next_turn, room_id), commit=True)
             alerts[c.from_user.id] = f"{symbol} منعت الخصم! الدور بقى إلك."
             alerts[opp_id] = f"{symbol} {p_name} منعك من اللعب!"
         elif "💧" in card:
-            next_turn = await handle_draw1_card_action(c, room_id, p_idx, opp_id, opp_idx, card, room, players, alerts)
+            next_turn = await handle_draw1_card_action(c, room_id, p_idx, opp_id, opp_idx, card, room, players, alerts, discard_pile)
         elif "🌊" in card:
-            next_turn = await handle_draw2_card_action(c, room_id, p_idx, opp_id, opp_idx, card, room, players, alerts)
+            next_turn = await handle_draw2_card_action(c, room_id, p_idx, opp_id, opp_idx, card, room, players, alerts, discard_pile)
         elif "+2" in card:
-            next_turn = await handle_colored_draw2_action(c, room_id, p_idx, opp_id, opp_idx, card, room, players, alerts)
+            next_turn = await handle_colored_draw2_action(c, room_id, p_idx, opp_id, opp_idx, card, room, players, alerts, discard_pile)
 
         db_query("UPDATE rooms SET turn_index = %s WHERE room_id = %s", (next_turn, room_id), commit=True)
+        room = db_query("SELECT * FROM rooms WHERE room_id = %s", (room_id,))[0]
         current_id = c.from_user.id if next_turn == p_idx else opp_id
         check_p = db_query("SELECT hand FROM room_players WHERE user_id = %s", (current_id,))
         current_hand = safe_load(check_p[0]['hand']) if check_p else []
         can_play_now = False
         for c_check in current_hand:
-            if check_validity(c_check, card, new_color):
+            if check_validity(c_check, room['top_card'], room['current_color']):
                 can_play_now = True
                 break
         if not can_play_now:
