@@ -380,6 +380,66 @@ async def player_post_receive_text_pending(message: types.Message, state: FSMCon
         if not ok:
             await message.answer(_violation_message(reason, text), reply_markup=_violation_reply_kb())
             return
+        share_replay_id = opts.get("share_replay_id")
+        if share_replay_id:
+            rdata = replay_data.get(share_replay_id)
+            if not rdata:
+                rdata = _get_replay_from_db(share_replay_id)
+            if rdata:
+                winner_id = rdata.get("winner_id")
+                if winner_id is not None:
+                    try:
+                        winner_id = int(winner_id)
+                    except (TypeError, ValueError):
+                        winner_id = None
+                if winner_id == uid:
+                    w_name = next((pname for pid, pname in (rdata.get("players") or []) if pid == winner_id), "لاعب")
+                    losers = [pname for pid, pname in (rdata.get("players") or []) if pid != winner_id]
+                    losers_text = " و ".join(_html_esc(n) for n in losers) if losers else "الخصم"
+                    total_pts = 0
+                    try:
+                        pr = db_query("SELECT online_points FROM users WHERE user_id = %s", (winner_id,))
+                        if pr:
+                            total_pts = int(pr[0].get("online_points") or 0)
+                    except Exception:
+                        pass
+                    summary = rdata.get("summary", "")
+                    round_pts_match = re.search(r"\(\+(\d+)\s*نقطة\)", summary) if summary else None
+                    round_pts = int(round_pts_match.group(1)) if round_pts_match else 0
+                    text_to_send = (
+                        f"👤 <b>{_html_esc(w_name)}</b> فاز\n"
+                        f"الخاسر {losers_text}\n"
+                        f"ربح {round_pts} نقطه\n"
+                        f"نقاطه الكلية {total_pts}\n"
+                        f"رسالته\n"
+                        f"{_html_esc(text)}"
+                    )
+                    join_code = None
+                    if add_play:
+                        try:
+                            join_code = _create_deferred_2p_room(winner_id, w_name)
+                        except Exception:
+                            pass
+                    reply_kb = _channel_post_buttons(winner_id, add_profile, join_code)
+                    sent_msg_id, err = await _send_to_channel_safe(message.bot, chat_target, text_to_send, reply_markup=reply_kb)
+                    if not err and sent_msg_id is not None:
+                        try:
+                            post_id = _save_channel_post_and_get_id(chat_target, sent_msg_id, winner_id, add_profile, join_code)
+                            if post_id is not None and reply_kb:
+                                new_kb = _channel_post_buttons(winner_id, add_profile, join_code, post_id=post_id, likes_count=0)
+                                if new_kb:
+                                    try:
+                                        await message.bot.edit_message_reply_markup(chat_id=chat_target, message_id=sent_msg_id, reply_markup=new_kb)
+                                    except Exception as e:
+                                        logger.warning("edit_message_reply_markup (share_result pending) failed: %s", e)
+                        except Exception as e:
+                            logger.exception("player_post: save_post share_result: %s", e)
+                        kb_after = []
+                        if PUBLISH_CHANNEL_USERNAME:
+                            kb_after.append([InlineKeyboardButton(text="📢 الذهاب للقناة", url=f"https://t.me/{PUBLISH_CHANNEL_USERNAME.lstrip('@')}")])
+                        kb_after.append([InlineKeyboardButton(text="🔙 رجوع للقائمة الرئيسية", callback_data="home")])
+                        await message.answer("✅ تم نشر منشورك في القناة.", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_after))
+                        return
         name = _get_player_name_for_post(uid, message.from_user.full_name)
         text_to_send = _post_text_html(name, text)
         join_code = None
@@ -738,7 +798,8 @@ async def post_ready_send(c: types.CallbackQuery, state: FSMContext):
         _clear_pending_help_request(uid)
     except Exception:
         pass
-    _pending_post[uid] = {"add_profile": add_profile, "add_play": add_play, "at": time.time()}
+    share_replay_id = data.get("share_replay_id")
+    _pending_post[uid] = {"add_profile": add_profile, "add_play": add_play, "at": time.time(), "share_replay_id": share_replay_id}
     _last_post_options_at[uid] = time.time()
     try:
         db_query(
@@ -1018,7 +1079,6 @@ async def player_post_receive_text_from_options(message: types.Message, state: F
             except (TypeError, ValueError):
                 winner_id = None
         w_name = next((pname for pid, pname in (rdata.get("players") or []) if pid == winner_id), "لاعب")
-        # أسماء الخاسرين (كل اللاعبين ما عدا الفائز)
         losers = [pname for pid, pname in (rdata.get("players") or []) if pid != winner_id]
         losers_text = " و ".join(_html_esc(n) for n in losers) if losers else "الخصم"
         total_pts = 0
@@ -1032,13 +1092,13 @@ async def player_post_receive_text_from_options(message: types.Message, state: F
         summary = rdata.get("summary", "")
         round_pts_match = re.search(r"\(\+(\d+)\s*نقطة\)", summary) if summary else None
         round_pts = int(round_pts_match.group(1)) if round_pts_match else 0
-        round_line = f"\n📊 <b>حصل على {round_pts} نقطة</b> في هذه الجولة."
-        total_line = f"\n⭐ <b>نقاطه الكلية:</b> {total_pts}"
         text_to_send = (
-            f"🏆 <b>{_html_esc(w_name)}</b> فاز على <b>{losers_text}</b>!\n"
-            f"{round_line}\n"
-            f"{total_line}\n\n"
-            f"💬 <b>{_html_esc(w_name)}:</b> {_html_esc(text)}"
+            f"👤 <b>{_html_esc(w_name)}</b> فاز\n"
+            f"الخاسر {losers_text}\n"
+            f"ربح {round_pts} نقطه\n"
+            f"نقاطه الكلية {total_pts}\n"
+            f"رسالته\n"
+            f"{_html_esc(text)}"
         )
         join_code = None
         if add_play:
