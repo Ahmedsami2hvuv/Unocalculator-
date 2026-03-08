@@ -194,7 +194,8 @@ async def channel_subscribe_message_middleware(handler, event: types.Message, da
     kb = _channel_subscribe_kb()
     if kb and kb.inline_keyboard:
         kb.inline_keyboard.append([InlineKeyboardButton(text="✅ تحقق", callback_data="check_channel_sub")])
-    await event.answer("⛔ يجب الاشتراك في القناة أولاً لاستخدام البوت.\n\nاشترك ثم اضغط «تحقق».", reply_markup=kb)
+    uid = event.from_user.id if event.from_user else 0
+    await event.answer(t(uid, "channel_subscribe_required"), reply_markup=kb)
     return
 
 async def channel_subscribe_callback_middleware(handler, event: types.CallbackQuery, data: dict):
@@ -227,7 +228,8 @@ async def channel_subscribe_callback_middleware(handler, event: types.CallbackQu
     kb = _channel_subscribe_kb()
     if kb and kb.inline_keyboard:
         kb.inline_keyboard.append([InlineKeyboardButton(text="✅ تحقق", callback_data="check_channel_sub")])
-    await event.message.edit_text("⛔ يجب الاشتراك في القناة أولاً لاستخدام البوت.\n\nاشترك ثم اضغط «تحقق».", reply_markup=kb)
+    uid = event.from_user.id if event.from_user else 0
+    await event.message.edit_text(t(uid, "channel_subscribe_required"), reply_markup=kb)
     return
 
 router.message.middleware(channel_subscribe_message_middleware)
@@ -447,7 +449,7 @@ def _get_replay_from_db(replay_id: str):
     """جلب جلسة replay من قاعدة البيانات (لنشر الفوز يعمل حتى من worker آخر)."""
     try:
         row = db_query(
-            "SELECT summary, winner_id, players_json FROM replay_sessions WHERE replay_id = %s",
+            "SELECT summary, winner_id, players_json, badge_earned FROM replay_sessions WHERE replay_id = %s",
             (replay_id,)
         )
         if not row:
@@ -464,17 +466,45 @@ def _get_replay_from_db(replay_id: str):
                         players.append((int(x.get("user_id") or 0), str(x.get("player_name") or "لاعب")))
             except Exception:
                 pass
-        return {
+        out = {
             "summary": r.get("summary") or "🏁 انتهت الجولة!",
             "winner_id": r.get("winner_id"),
             "players": players,
         }
+        if r.get("badge_earned") is not None:
+            out["badge_just_earned"] = r.get("badge_earned")
+        return out
     except Exception:
-        return None
+        try:
+            row = db_query(
+                "SELECT summary, winner_id, players_json FROM replay_sessions WHERE replay_id = %s",
+                (replay_id,)
+            )
+            if not row:
+                return None
+            r = row[0]
+            players = []
+            if r.get("players_json"):
+                try:
+                    raw = json.loads(r["players_json"])
+                    for x in raw:
+                        if isinstance(x, (list, tuple)) and len(x) >= 2:
+                            players.append((int(x[0]), str(x[1]) or "لاعب"))
+                        elif isinstance(x, dict):
+                            players.append((int(x.get("user_id") or 0), str(x.get("player_name") or "لاعب")))
+                except Exception:
+                    pass
+            return {
+                "summary": r.get("summary") or "🏁 انتهت الجولة!",
+                "winner_id": r.get("winner_id"),
+                "players": players,
+            }
+        except Exception:
+            return None
 
 
-def create_replay_session(players: list, room: dict, mode: str, summary_text: str, winner_id: int = None) -> str:
-    """ينشئ جلسة replay واحدة لكل اللاعبين ويخزن الملخص. winner_id: للاعب الفائز (يُظهر له زر نشر النتيجة)."""
+def create_replay_session(players: list, room: dict, mode: str, summary_text: str, winner_id: int = None, badge_just_earned: str = None) -> str:
+    """ينشئ جلسة replay واحدة لكل اللاعبين ويخزن الملخص. winner_id: للاعب الفائز. badge_just_earned: نص الشارة إن حصل عليها الآن (لزر انشر شارتك)."""
     replay_id = str(uuid.uuid4())[:8]
     players_list = [(p["user_id"], p.get("player_name") or "لاعب") for p in players]
     replay_data[replay_id] = {
@@ -485,6 +515,7 @@ def create_replay_session(players: list, room: dict, mode: str, summary_text: st
         "creator_id": room.get("creator_id"),
         "summary": summary_text,
         "winner_id": winner_id,
+        "badge_just_earned": badge_just_earned,
     }
     try:
         db_query(
@@ -507,6 +538,12 @@ def create_replay_session(players: list, room: dict, mode: str, summary_text: st
         )
     except Exception:
         pass
+    if badge_just_earned:
+        try:
+            db_query("ALTER TABLE replay_sessions ADD COLUMN IF NOT EXISTS badge_earned TEXT", commit=True)
+            db_query("UPDATE replay_sessions SET badge_earned = %s WHERE replay_id = %s", (badge_just_earned, replay_id), commit=True)
+        except Exception:
+            pass
     return replay_id
 
 
@@ -582,6 +619,9 @@ def build_game_end_keyboard(replay_id: str, for_user_id: int) -> InlineKeyboardM
         except Exception:
             pass
         kb.append([InlineKeyboardButton(text=share_btn_text, callback_data=f"share_result_{replay_id}")])
+    badge_earned = rdata.get("badge_just_earned") or (rdata.get("badge_earned") if isinstance(rdata.get("badge_earned"), str) else None)
+    if winner_id and for_user_id == winner_id and badge_earned and (PUBLISH_CHANNEL_ID or PUBLISH_CHANNEL_USERNAME):
+        kb.append([InlineKeyboardButton(text=t(for_user_id, "badge_publish_btn"), callback_data=f"publish_badge_{replay_id}")])
     kb.append([InlineKeyboardButton(text="🔄 لعب مرة أخرى", callback_data=f"replay_{replay_id}")])
     if replay_id and str(replay_id) != "None":
         kb.append([InlineKeyboardButton(text="📋 تبليغ على لاعب", callback_data=f"report_{replay_id}")])
@@ -687,7 +727,7 @@ async def main_menu_button(message: types.Message, state: FSMContext):
             pass
         user = db_query("SELECT * FROM users WHERE user_id = %s", (uid,))
     if user and user[0].get("is_banned") in (True, 1, "t", "true"):
-        await message.answer("🚫 تم حظرك من البوت. لا يمكنك استخدام البوت.")
+        await message.answer(t(uid, "banned_from_bot"))
         return
     if user and user[0].get("logged_out") in (True, 1, "t", "true"):
         lang = get_lang(uid)
@@ -931,7 +971,7 @@ async def process_start_deeplink(message: types.Message, payload: str, state: FS
                     pass
                 await message.answer(f"❤️ تم! عدد لايكات المنشور: {new_count}")
                 return True
-        await message.answer("✅ شكراً!")
+        await message.answer(t(message.from_user.id, "thanks"))
         return True
     if payload.startswith("profile_") or payload.startswith("add_"):
         rest = payload.split("_", 1)[1]
@@ -983,7 +1023,7 @@ async def process_start_deeplink(message: types.Message, payload: str, state: FS
                 await message.answer(profile_text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
                 return True
             else:
-                await message.answer("👤 اللاعب غير موجود أو حذف حسابه.")
+                await message.answer(t(message.from_user.id, "player_not_found"))
                 return True
     if payload.startswith("join_"):
         code = _normalize_join_code(payload)
@@ -1016,7 +1056,7 @@ async def process_start_deeplink(message: types.Message, payload: str, state: FS
             await message.answer(welcome, reply_markup=kb)
             return True
         else:
-            await message.answer("⚠️ رابط الانضمام غير صالح أو انتهت صلاحية الغرفة. أرسل /start للقائمة.")
+            await message.answer(t(message.from_user.id, "invalid_join_link"))
             return True
     return False
 
@@ -1055,7 +1095,7 @@ async def cmd_start_with_deeplink(message: types.Message, state: FSMContext, com
         user = db_query("SELECT * FROM users WHERE user_id = %s", (uid,))
     # إذا كان محظوراً، نعرض رسالة الحظر فقط
     if user and user[0].get("is_banned") in (True, 1, "t", "true"):
-        await message.answer("🚫 تم حظرك من البوت. لا يمكنك استخدام البوت.")
+        await message.answer(t(uid, "banned_from_bot"))
         return
     # إذا كان مسجّل الخروج، نعرض تسجيل/دخول ولا نفتح القائمة الرئيسية
     if user and user[0].get("logged_out") in (True, 1, "t", "true"):
@@ -1079,23 +1119,23 @@ async def process_upgrade_username(message: types.Message, state: FSMContext):
 
     # التأكد من الطول وشكل اليوزر
     if len(new_username) < 3 or not new_username.isalnum():
-        return await message.answer("❌ اليوزر نيم يجب أن يكون 3 أحرف أو أكثر (إنجليزي وأرقام فقط):")
+        return await message.answer(t(message.from_user.id, "username_3_chars"))
 
     # التأكد إذا اليوزر محجوز لغير لاعب
     check = db_query("SELECT user_id FROM users WHERE username_key = %s", (new_username,))
     if check:
-        return await message.answer("❌ هذا اليوزر نيم محجوز لشخص آخر، اختر غيره:")
+        return await message.answer(t(message.from_user.id, "username_taken"))
 
     # حفظ اليوزر مؤقتاً بالـ state والانتقال لطلب كلمة السر
     await state.update_data(temp_username=new_username)
-    await message.answer("✅ يوزر رائع! الآن أرسل كلمة السر التي تريدها (4 أحرف أو أكثر):")
+    await message.answer(t(message.from_user.id, "username_ok_send_password"))
     await state.set_state(RoomStates.upgrade_password)
 
 @router.message(RoomStates.upgrade_password)
 async def process_upgrade_password(message: types.Message, state: FSMContext):
     password = message.text.strip()
     if len(password) < 4:
-        return await message.answer("❌ كلمة السر ضعيفة، أرسل 4 أحرف أو أكثر:")
+        return await message.answer(t(message.from_user.id, "password_4_chars"))
 
     data = await state.get_data()
     username = data.get('temp_username')
@@ -1118,6 +1158,8 @@ async def process_upgrade_password(message: types.Message, state: FSMContext):
 
 @router.callback_query(F.data == "play_friends")
 async def on_play_friends(c: types.CallbackQuery):
+    if await _ask_badge_color_if_needed(c):
+        return
     uid = c.from_user.id
     text = "🎮 **اللعب مع الأصدقاء**\n\nاختر:"
     kb = [
@@ -1139,12 +1181,12 @@ async def process_username_step(message: types.Message, state: FSMContext):
 
     # التحقق من شروط اليوزرنيم
     if not username.isalnum() or len(username) < 3:
-        await message.answer("✍️ يرجى إدخال اسم مستخدم (يوزر نيم) خاص بك (حروف إنجليزية وأرقام فقط، 3 أحرف على الأقل):")
+        await message.answer(t(message.from_user.id, "enter_username_prompt"))
         return
 
     check = db_query("SELECT user_id FROM users WHERE username_key = %s", (username,))
     if check:
-        await message.answer("❌ هذا اليوزر نيم مستخدم من قبل، اختر غيره.")
+        await message.answer(t(message.from_user.id, "username_in_use"))
         return
 
     db_query("UPDATE users SET username_key = %s WHERE user_id = %s", (username, user_id), commit=True)
@@ -1293,7 +1335,7 @@ async def complete_profile_password_handler(message: types.Message, state: FSMCo
 async def _join_room_by_code(message, code, user_data):
     uid = message.from_user.id
     if user_data.get("is_banned") in (True, 1, "t", "true"):
-        await message.answer("🚫 تم حظرك من البوت. لا يمكنك الانضمام للغرف.")
+        await message.answer(t(message.from_user.id, "banned_no_rooms"))
         return
     room = db_query("SELECT * FROM rooms WHERE room_id = %s AND status = 'waiting'", (code,))
     if not room:
@@ -1500,6 +1542,8 @@ async def _random_wait_30_sec(room_id: str, uid: int, message_id: int, chat_id: 
 
 @router.callback_query(F.data == "random_play")
 async def menu_random(c: types.CallbackQuery):
+    if await _ask_badge_color_if_needed(c):
+        return
     uid = c.from_user.id
     user = db_query("SELECT * FROM users WHERE user_id = %s", (uid,))
     if not user:
@@ -1564,6 +1608,8 @@ async def menu_friends(c: types.CallbackQuery):
 
 @router.callback_query(F.data == "random_play")
 async def random_play(c: types.CallbackQuery):
+    if await _ask_badge_color_if_needed(c):
+        return
     uid = c.from_user.id
     user = db_query("SELECT * FROM users WHERE user_id = %s", (uid,))
     if not user:
@@ -1688,6 +1734,8 @@ async def random_retry(c: types.CallbackQuery):
 
 @router.callback_query(F.data.startswith("play_vs_bot"))
 async def play_vs_bot(c: types.CallbackQuery):
+    if await _ask_badge_color_if_needed(c):
+        return
     uid = c.from_user.id
     user = db_query("SELECT * FROM users WHERE user_id = %s", (uid,))
     if not user:
@@ -1721,7 +1769,7 @@ async def play_vs_bot(c: types.CallbackQuery):
     )
     await c.answer()
     try:
-        await c.message.edit_text("🎮 بدأت اللعبة ضد البوت! استعد...")
+        await c.message.edit_text(t(c.from_user.id, "game_started_vs_bot"))
     except Exception:
         pass
     from handlers.room_2p import start_new_round
@@ -1740,7 +1788,7 @@ async def room_create_menu(c: types.CallbackQuery):
     if row:
         kb.append(row)
     kb.append([InlineKeyboardButton(text="🔙 رجوع", callback_data="menu_friends")])
-    await c.message.edit_text("👥 اختر عدد اللاعبين:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+    await c.message.edit_text(t(c.from_user.id, "choose_player_count"), reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
 
 
 
@@ -1754,12 +1802,20 @@ def _get_follow_counts(user_id):
 
 @router.callback_query(F.data == "my_account")
 async def show_profile(c: types.CallbackQuery):
+    if await _ask_badge_color_if_needed(c):
+        return
     user_data = db_query("SELECT * FROM users WHERE user_id = %s", (c.from_user.id,))
     if not user_data:
-        return await c.answer("⚠️ حسابك غير مسجل.")
+        return await c.answer(t(c.from_user.id, "account_not_registered"), show_alert=True)
     user = user_data[0]
     uid = c.from_user.id
     followers_count, following_count = _get_follow_counts(uid)
+    try:
+        from badges import get_display_badge
+        badge = get_display_badge(uid)
+        badge_line = f"\n🏅 الشارة: {badge}" if badge else ""
+    except Exception:
+        badge_line = ""
     txt = (
         f"👤 **معلومات حسابك**\n\n"
         f"📛 اسم اللاعب: {user['player_name']}\n"
@@ -1768,6 +1824,7 @@ async def show_profile(c: types.CallbackQuery):
         f"⭐ عدد النقاط: {user.get('online_points', 0)}\n"
         f"📈 عدد المتابعين (الذين يتابعونك): {followers_count}\n"
         f"📉 عدد من تتابعهم: {following_count}"
+        f"{badge_line}"
     )
     kb = [
         [InlineKeyboardButton(text="✏️ تعديل بيانات الحساب", callback_data="edit_account"), InlineKeyboardButton(text="⚙️ الإعدادات", callback_data="my_settings")],
@@ -1872,11 +1929,17 @@ async def help_request_back(c: types.CallbackQuery, state: FSMContext):
     _clear_pending_help_request(c.from_user.id)
     user_data = db_query("SELECT * FROM users WHERE user_id = %s", (c.from_user.id,))
     if not user_data:
-        await c.answer("⚠️ حسابك غير مسجل.")
+        await c.answer(t(c.from_user.id, "account_not_registered"), show_alert=True)
         return
     user = user_data[0]
     uid = c.from_user.id
     followers_count, following_count = _get_follow_counts(uid)
+    try:
+        from badges import get_display_badge
+        badge = get_display_badge(uid)
+        badge_line = f"\n🏅 الشارة: {badge}" if badge else ""
+    except Exception:
+        badge_line = ""
     txt = (
         f"👤 **معلومات حسابك**\n\n"
         f"📛 اسم اللاعب: {user['player_name']}\n"
@@ -1885,6 +1948,7 @@ async def help_request_back(c: types.CallbackQuery, state: FSMContext):
         f"⭐ عدد النقاط: {user.get('online_points', 0)}\n"
         f"📈 عدد المتابعين (الذين يتابعونك): {followers_count}\n"
         f"📉 عدد من تتابعهم: {following_count}"
+        f"{badge_line}"
     )
     kb = [
         [InlineKeyboardButton(text="✏️ تعديل بيانات الحساب", callback_data="edit_account"), InlineKeyboardButton(text="⚙️ الإعدادات", callback_data="my_settings")],
@@ -2756,6 +2820,13 @@ def _build_profile_text(uid: int, t_user: dict, target_id: int) -> str:
     followers_count, following_count = _get_follow_counts(target_id)
     text += f"\n{t(uid, 'profile_followers_count', count=followers_count)}"
     text += f"\n{t(uid, 'profile_following_count', count=following_count)}"
+    try:
+        from badges import get_display_badge
+        badge = get_display_badge(target_id)
+        if badge:
+            text += f"\n🏅 الشارة: {badge}"
+    except Exception:
+        pass
     badges = get_user_achievements(target_id)
     if badges:
         text += format_achievements_badges(uid, badges)
@@ -2849,6 +2920,36 @@ async def process_user_search_by_id(c: types.CallbackQuery, target_id: int, back
     await c.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
     
 
+async def _ask_badge_color_if_needed(c: types.CallbackQuery) -> bool:
+    """إذا اللاعب مسجّل وليس له لون شارة، يعرض له اختيار اللون ويرجع True (لا تكمل المعالج). وإلا يرجع False."""
+    try:
+        from badges import get_badge_info
+        uid = c.from_user.id
+        user = db_query("SELECT user_id, logged_out FROM users WHERE user_id = %s", (uid,))
+        if not user or user[0].get("logged_out") in (True, 1, "t", "true"):
+            return False
+        info = get_badge_info(uid)
+        if info.get("badge_color") and str(info.get("badge_color", "")).strip():
+            return False
+        txt = "🆕 **وضع جديد: شارتك لك يا لاعب!**\n\nاختر لون شارتك الآن قبل أن تقوم بأي شيء."
+        kb_badge = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="🔴", callback_data="choose_badge_first_🔴"),
+                InlineKeyboardButton(text="🟡", callback_data="choose_badge_first_🟡"),
+                InlineKeyboardButton(text="🟢", callback_data="choose_badge_first_🟢"),
+                InlineKeyboardButton(text="🔵", callback_data="choose_badge_first_🔵"),
+            ]
+        ])
+        try:
+            await c.message.edit_text(txt, reply_markup=kb_badge, parse_mode="Markdown")
+        except Exception:
+            await c.message.answer(txt, reply_markup=kb_badge, parse_mode="Markdown")
+        await c.answer()
+        return True
+    except Exception:
+        return False
+
+
 async def show_main_menu(message, name, user_id, cleanup=False, state=None, from_admin=False):
     # 1. تنظيف الحالة
     if state:
@@ -2859,7 +2960,7 @@ async def show_main_menu(message, name, user_id, cleanup=False, state=None, from
         # لا سجل في DB: نرد بأقل شيء حتى لا يبقى المستخدم بلا رد
         target_msg = message.message if isinstance(message, types.CallbackQuery) else message
         try:
-            await target_msg.answer("مرحباً! أرسل /start مرة أخرى للتسجيل.")
+            await target_msg.answer(t(user_id, "hello_send_start"))
         except Exception:
             pass
         return
@@ -2868,7 +2969,7 @@ async def show_main_menu(message, name, user_id, cleanup=False, state=None, from
     if not from_admin and user_rows[0].get("is_banned") in (True, 1, "t", "true"):
         target_msg = message.message if isinstance(message, types.CallbackQuery) else message
         try:
-            await target_msg.answer("🚫 تم حظرك من البوت. لا يمكنك استخدام البوت.")
+            await target_msg.answer(t(uid, "banned_from_bot"))
         except Exception:
             pass
         return
@@ -2889,7 +2990,7 @@ async def show_main_menu(message, name, user_id, cleanup=False, state=None, from
     # 3. شرط اليوزر نيم (تخطى إذا رجوع من لوحة الإدارة)
     if not from_admin and not user_rows[0].get('username_key'):
         target_msg = message.message if isinstance(message, types.CallbackQuery) else message
-        await target_msg.answer("⚠️ يرجى إدخال اسم مستخدم (يوزر نيم) خاص بك (حروف إنجليزية وأرقام فقط):")
+        await target_msg.answer(t(uid, "enter_username_please"))
         if state:
             await state.set_state(RoomStates.upgrade_username)
         return
@@ -2913,6 +3014,38 @@ async def show_main_menu(message, name, user_id, cleanup=False, state=None, from
         except Exception:
             pass
         return
+    # 3.6 وضع جديد: إذا اللاعب مسجّل وليس له لون شارة بعد، نطلب منه اختيار اللون قبل أي شيء
+    if not from_admin:
+        try:
+            from badges import get_badge_info
+            info = get_badge_info(uid)
+            if not info.get("badge_color") or not str(info.get("badge_color", "")).strip():
+                target_msg = message.message if isinstance(message, types.CallbackQuery) else message
+                txt = "🆕 **وضع جديد: شارتك لك يا لاعب!**\n\nاختر لون شارتك الآن قبل أن تقوم بأي شيء."
+                kb_badge = InlineKeyboardMarkup(inline_keyboard=[
+                    [
+                        InlineKeyboardButton(text="🔴", callback_data="choose_badge_first_🔴"),
+                        InlineKeyboardButton(text="🟡", callback_data="choose_badge_first_🟡"),
+                        InlineKeyboardButton(text="🟢", callback_data="choose_badge_first_🟢"),
+                        InlineKeyboardButton(text="🔵", callback_data="choose_badge_first_🔵"),
+                    ]
+                ])
+                try:
+                    if isinstance(message, types.CallbackQuery):
+                        await message.message.edit_text(txt, reply_markup=kb_badge, parse_mode="Markdown")
+                    else:
+                        await target_msg.answer(txt, reply_markup=kb_badge, parse_mode="Markdown")
+                    if isinstance(message, types.CallbackQuery):
+                        await message.answer()
+                except Exception:
+                    if isinstance(message, types.CallbackQuery):
+                        await message.message.answer(txt, reply_markup=kb_badge, parse_mode="Markdown")
+                        await message.answer()
+                    else:
+                        await target_msg.answer(txt, reply_markup=kb_badge, parse_mode="Markdown")
+                return
+        except Exception:
+            pass
     # 4. بناء الكيبورد
     kb = [
         [InlineKeyboardButton(text=t(uid, "btn_random_play"), callback_data="random_play"),
@@ -3022,7 +3155,7 @@ async def next_round_go(c: types.CallbackQuery):
         return await c.answer("⚠️ انتهت صلاحية هذا الخيار.", show_alert=True)
     room = db_query("SELECT * FROM rooms WHERE room_id = %s", (room_id,))
     if not room:
-        return await c.message.edit_text("⚠️ الغرفة لم تعد موجودة.")
+        return await c.message.edit_text(t(c.from_user.id, "room_expired"))
     uid = c.from_user.id
     if room_id not in next_round_ready:
         next_round_ready[room_id] = set()
@@ -3105,6 +3238,58 @@ async def gameend_open_profile(c: types.CallbackQuery):
     if not rdata:
         return await c.answer("⚠️ انتهت صلاحية هذه الشاشة.", show_alert=True)
     await process_user_search_by_id(c, target_id, back_to_replay_id=replay_id)
+
+
+@router.callback_query(F.data.startswith("publish_badge_"))
+async def publish_badge_to_channel(c: types.CallbackQuery):
+    """نشر الشارة في القناة عند ضغط «انشر شارتك»."""
+    replay_id = c.data.replace("publish_badge_", "").strip()
+    if not replay_id:
+        return await c.answer("⚠️ خطأ في الرابط.", show_alert=True)
+    rdata = replay_data.get(replay_id)
+    if not rdata:
+        rdata = _get_replay_from_db(replay_id)
+    if not rdata:
+        return await c.answer("⚠️ انتهت صلاحية النشر.", show_alert=True)
+    winner_id = rdata.get("winner_id")
+    try:
+        winner_id = int(winner_id)
+    except (TypeError, ValueError):
+        winner_id = None
+    if winner_id != c.from_user.id:
+        return await c.answer("⚠️ هذا الخيار للفائز فقط.", show_alert=True)
+    badge_earned = rdata.get("badge_just_earned") or rdata.get("badge_earned")
+    if not badge_earned:
+        return await c.answer("⚠️ لا توجد شارة لنشرها.", show_alert=True)
+    if not (PUBLISH_CHANNEL_ID or PUBLISH_CHANNEL_USERNAME):
+        return await c.answer("⚠️ القناة غير مضبوطة.", show_alert=True)
+    row = db_query("SELECT player_name FROM users WHERE user_id = %s", (winner_id,))
+    p_name = (row[0]["player_name"] if row else None) or "لاعب"
+    text = f"🏅 **حصل {p_name} على شارة {badge_earned}!**"
+    try:
+        cid = PUBLISH_CHANNEL_ID
+        if cid is not None and isinstance(cid, str):
+            cid = cid.strip().strip('"').strip("'")
+            if cid.lstrip("-").isdigit():
+                chat_target = int(cid)
+            else:
+                chat_target = None
+        else:
+            chat_target = cid
+    except Exception:
+        chat_target = None
+    if (chat_target is None or not str(chat_target).lstrip("-").isdigit()) and PUBLISH_CHANNEL_USERNAME:
+        chat_target = str(PUBLISH_CHANNEL_USERNAME).strip().lstrip("@")
+        if not chat_target.startswith("@"):
+            chat_target = "@" + chat_target
+    try:
+        bot_me = await c.bot.get_me()
+        profile_url = f"https://t.me/{bot_me.username}?start=profile_{winner_id}" if bot_me.username else None
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="عرض الحساب", url=profile_url)]]) if profile_url else None
+        await c.bot.send_message(chat_target, text, parse_mode="Markdown", reply_markup=kb)
+        await c.answer("✅ تم نشر شارتك في القناة!", show_alert=True)
+    except Exception as e:
+        await c.answer("⚠️ فشل النشر: " + str(e)[:50], show_alert=True)
 
 
 @router.callback_query(F.data.startswith("gameend_back_"))
@@ -3219,7 +3404,7 @@ async def room_settings(c: types.CallbackQuery):
     code = c.data.split("_", 1)[1]
     room = db_query("SELECT * FROM rooms WHERE room_id = %s", (code,))
     if not room:
-        return await c.message.edit_text("⚠️ الغرفة لم تعد موجودة.")
+        return await c.message.edit_text(t(c.from_user.id, "room_expired"))
     if room[0]['creator_id'] != c.from_user.id:
         return await c.answer("⚠️ فقط صاحب الغرفة يقدر يدخل الإعدادات!", show_alert=True)
     is_playing = room[0]['status'] == 'playing'
@@ -3238,7 +3423,7 @@ async def room_settings_back(c: types.CallbackQuery):
     code = c.data.split("_", 1)[1]
     room = db_query("SELECT * FROM rooms WHERE room_id = %s", (code,))
     if not room:
-        return await c.message.edit_text("⚠️ الغرفة لم تعد موجودة.")
+        return await c.message.edit_text(t(c.from_user.id, "room_expired"))
     if room[0]['status'] == 'playing':
         await c.message.edit_text("🔄 جاري العودة للعبة...")
         p_count = len(db_query("SELECT user_id FROM room_players WHERE room_id = %s", (code,)))
@@ -3273,7 +3458,7 @@ async def kick_player_list(c: types.CallbackQuery):
     code = c.data.split("_", 1)[1]
     room = db_query("SELECT * FROM rooms WHERE room_id = %s", (code,))
     if not room:
-        return await c.message.edit_text("⚠️ الغرفة لم تعد موجودة.")
+        return await c.message.edit_text(t(c.from_user.id, "room_expired"))
     if room[0]['creator_id'] != c.from_user.id:
         return await c.answer("⚠️ فقط صاحب الغرفة يقدر يطرد!", show_alert=True)
     players = db_query("SELECT user_id, player_name FROM room_players WHERE room_id = %s AND user_id != %s", (code, c.from_user.id))
@@ -3301,7 +3486,7 @@ async def kick_player_toggle(c: types.CallbackQuery):
     target_id = int(parts[2])
     room = db_query("SELECT * FROM rooms WHERE room_id = %s", (code,))
     if not room:
-        return await c.message.edit_text("⚠️ الغرفة لم تعد موجودة.")
+        return await c.message.edit_text(t(c.from_user.id, "room_expired"))
     if room[0]['creator_id'] != c.from_user.id:
         return await c.answer("⚠️ فقط صاحب الغرفة يقدر يطرد!", show_alert=True)
     if code not in kick_selections:
@@ -3318,7 +3503,7 @@ async def kick_player_confirm(c: types.CallbackQuery):
     code = c.data.split("_", 1)[1]
     room = db_query("SELECT * FROM rooms WHERE room_id = %s", (code,))
     if not room:
-        return await c.message.edit_text("⚠️ الغرفة لم تعد موجودة.")
+        return await c.message.edit_text(t(c.from_user.id, "room_expired"))
     if room[0]['creator_id'] != c.from_user.id:
         return await c.answer("⚠️ فقط صاحب الغرفة يقدر يطرد!", show_alert=True)
     selected = kick_selections.get(code, set())
@@ -3341,7 +3526,7 @@ async def kick_player_execute(c: types.CallbackQuery):
     code = c.data.split("_", 1)[1]
     room = db_query("SELECT * FROM rooms WHERE room_id = %s", (code,))
     if not room:
-        return await c.message.edit_text("⚠️ الغرفة لم تعد موجودة.")
+        return await c.message.edit_text(t(c.from_user.id, "room_expired"))
     if room[0]['creator_id'] != c.from_user.id:
         return await c.answer("⚠️ فقط صاحب الغرفة يقدر يطرد!", show_alert=True)
     selected = kick_selections.pop(code, set())
@@ -3366,7 +3551,7 @@ async def change_score_limit(c: types.CallbackQuery):
     code = c.data.split("_", 1)[1]
     room = db_query("SELECT * FROM rooms WHERE room_id = %s", (code,))
     if not room:
-        return await c.message.edit_text("⚠️ الغرفة لم تعد موجودة.")
+        return await c.message.edit_text(t(c.from_user.id, "room_expired"))
     if room[0]['creator_id'] != c.from_user.id:
         return await c.answer("⚠️ فقط صاحب الغرفة يقدر يغير السقف!", show_alert=True)
     limits = [100, 150, 200, 250, 300, 350, 400, 450, 500]
@@ -3393,7 +3578,7 @@ async def set_new_score_limit(c: types.CallbackQuery):
     new_limit = int(parts[2])
     room = db_query("SELECT * FROM rooms WHERE room_id = %s", (code,))
     if not room:
-        return await c.message.edit_text("⚠️ الغرفة لم تعد موجودة.")
+        return await c.message.edit_text(t(c.from_user.id, "room_expired"))
     if room[0]['creator_id'] != c.from_user.id:
         return await c.answer("⚠️ فقط صاحب الغرفة يقدر يغير السقف!", show_alert=True)
     db_query("UPDATE rooms SET score_limit = %s WHERE room_id = %s", (new_limit, code), commit=True)
@@ -3510,8 +3695,15 @@ async def show_match_history(c: types.CallbackQuery):
 @router.callback_query(F.data == "my_settings")
 async def my_settings_menu(c: types.CallbackQuery):
     uid = c.from_user.id
-    text = "⚙️ **الإعدادات**"
+    try:
+        from badges import get_badge_info
+        info = get_badge_info(uid)
+        badge_line = f"\n🏅 لون الشارة: {info['badge_color'] or 'غير محدد'}"
+    except Exception:
+        badge_line = ""
+    text = "⚙️ **الإعدادات**" + badge_line
     kb = [
+        [InlineKeyboardButton(text="🏅 لون الشارة", callback_data="badge_color")],
         [InlineKeyboardButton(text="📩 استقبال الدعوات", callback_data="settings_invites")],
         [InlineKeyboardButton(text="🔙 رجوع", callback_data="my_account")]
     ]
@@ -3546,6 +3738,56 @@ async def settings_invites_ui(c: types.CallbackQuery):
     )
     await c.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="Markdown")
     await c.answer()
+
+@router.callback_query(F.data == "badge_color")
+async def badge_color_menu(c: types.CallbackQuery):
+    uid = c.from_user.id
+    kb = [
+        [
+            InlineKeyboardButton(text="🔴", callback_data="set_badge_🔴"),
+            InlineKeyboardButton(text="🟡", callback_data="set_badge_🟡"),
+            InlineKeyboardButton(text="🟢", callback_data="set_badge_🟢"),
+            InlineKeyboardButton(text="🔵", callback_data="set_badge_🔵"),
+        ],
+        [InlineKeyboardButton(text="🔙 رجوع", callback_data="my_settings")]
+    ]
+    await c.message.edit_text(
+        "🏅 **اختر لون شارتك**\n\nكل شاراتك (🔴1، 🔴2، … ثم الأكشن والجوكر) ستظهر بهذا اللون.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=kb),
+        parse_mode="Markdown"
+    )
+    await c.answer()
+
+@router.callback_query(F.data.startswith("choose_badge_first_"))
+async def choose_badge_first_cb(c: types.CallbackQuery, state: FSMContext):
+    """عند اختيار لون الشارة لأول مرة (قبل الدخول للقائمة) → حفظ اللون ثم عرض القائمة الرئيسية."""
+    uid = c.from_user.id
+    color = c.data.replace("choose_badge_first_", "").strip()
+    try:
+        from badges import set_badge_color, BADGE_COLORS
+        if color in BADGE_COLORS and set_badge_color(uid, color):
+            await c.answer("✅ تم! لون شارتك: " + color, show_alert=True)
+            user = db_query("SELECT player_name FROM users WHERE user_id = %s", (uid,))
+            name = (user[0]["player_name"] if user else None) or c.from_user.full_name
+            await show_main_menu(c.message, name, user_id=uid, state=state)
+        else:
+            await c.answer("⚠️ اختر لوناً من الأزرار أعلاه.", show_alert=True)
+    except Exception:
+        await c.answer("⚠️ حدث خطأ، جرّب مرة أخرى.", show_alert=True)
+
+@router.callback_query(F.data.startswith("set_badge_"))
+async def set_badge_color_cb(c: types.CallbackQuery):
+    uid = c.from_user.id
+    color = c.data.replace("set_badge_", "").strip()
+    try:
+        from badges import set_badge_color, BADGE_COLORS
+        if color in BADGE_COLORS and set_badge_color(uid, color):
+            await c.answer("✅ تم تعيين لون الشارة: " + color, show_alert=True)
+        else:
+            await c.answer("⚠️ اختر لوناً من القائمة.", show_alert=True)
+    except Exception:
+        await c.answer("⚠️ حدث خطأ.", show_alert=True)
+    await my_settings_menu(c)
 
 @router.callback_query(F.data.startswith("set_invite_from_"))
 async def set_invite_from(c: types.CallbackQuery):
@@ -3838,6 +4080,8 @@ async def reject_invite(c: types.CallbackQuery):
 # 1. دالة عرض القائمة الاجتماعية (عند الضغط على زر الأصدقاء)
 @router.callback_query(F.data == "social_menu")
 async def show_social_menu(c: types.CallbackQuery):
+    if await _ask_badge_color_if_needed(c):
+        return
     uid = c.from_user.id
     
     # نجلب الأعداد من قاعدة البيانات
@@ -4518,7 +4762,7 @@ async def on_check_channel_sub(c: types.CallbackQuery, state: FSMContext):
     except Exception:
         is_member = False
     if not is_member:
-        await c.answer("⛔ ما زلت غير مشترك. اشترك في القناة ثم اضغط «تحقق» مرة أخرى.", show_alert=True)
+        await c.answer(t(c.from_user.id, "still_not_subscribed"), show_alert=True)
         return
     await state.clear()
     uid = c.from_user.id
