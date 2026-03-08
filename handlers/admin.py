@@ -5,6 +5,9 @@
 import os
 import html
 import json
+import logging
+
+logger = logging.getLogger(__name__)
 from aiogram import Router, types, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -326,10 +329,12 @@ async def admin_end_chat_callback(c: types.CallbackQuery, state: FSMContext):
 async def admin_chat_send_to_user(message: types.Message, state: FSMContext):
     if not is_admin(message.from_user.id):
         return
+    logger.info("admin_chat_send_to_user: admin=%s", message.from_user.id)
     data = await state.get_data()
     user_id = data.get("admin_chat_with_uid")
     if not user_id:
         await state.clear()
+        await message.answer("⚠️ انتهت جلسة المحادثة. اطلب محادثة جديدة من لوحة الإدارة.")
         return
     admin_name = message.from_user.full_name or "الإدارة"
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔚 إنهاء المحادثة", callback_data="admin_end_chat")]])
@@ -345,7 +350,12 @@ async def admin_chat_send_to_user(message: types.Message, state: FSMContext):
         elif message.document:
             await message.bot.send_document(user_id, message.document.file_id, caption=f"👤 من الإدارة ({admin_name})")
     except Exception as e:
-        await message.answer(f"فشل الإرسال: {e}")
+        logger.warning("admin_chat_send_to_user: send to user_id=%s failed: %s", user_id, e)
+        err = str(e).strip()[:300]
+        await message.answer(
+            f"❌ فشل إرسال الرسالة للاعب.\n\nقد يكون اللاعب حظر البوت أو أوقف المحادثة.\n\nالتفاصيل: {err}",
+            reply_markup=kb
+        )
         return
     await message.answer("✅ تم إرسال رسالتك.", reply_markup=kb)
 
