@@ -449,9 +449,10 @@ async def color_timeout_2p(room_id, bot, player_id):
             alerts[opp_id] = f"⏰ {p_name} ما اختار اللون بالوقت! تم اختيار {chosen_color} تلقائياً وسحبك {penalty} ورقة والدور رجع له!"
             alerts[player_id] = f"⏰ انتهى الوقت! تم اختيار اللون {chosen_color} تلقائياً."
         else:
-            next_turn = (p_idx + 1) % 2  # الجوكر الملون العادي: الدور يذهب للخصم
-            alerts[opp_id] = f"🎨 {p_name} اختار اللون {chosen_color} والدور رجع له!"
-            alerts[player_id] = f"🎨 اخترت اللون {chosen_color} والدور رجع لك!"
+            # جوكر ألوان (🌈): الدور يرجع للاعب نفسه (2 لاعب)
+            next_turn = p_idx
+            alerts[opp_id] = f"🎨 {p_name} اختار اللون {chosen_color} — دورك بعد ما يلعب."
+            alerts[player_id] = f"🎨 اخترت اللون {chosen_color} والدور بقى إلك!"
 
         db_query("UPDATE rooms SET top_card = %s, current_color = %s, turn_index = %s, deck = %s WHERE room_id = %s",
             (f"{card} {chosen_color}", chosen_color, next_turn, json.dumps(deck), room_id), commit=True)
@@ -1144,16 +1145,17 @@ async def bot_play_turn(room_id, bot):
                 challenge_timers[room_id] = asyncio.create_task(challenge_timeout_2p(room_id, bot))
             return
 
-        next_turn = (p_idx + 1) % 2
+        # الجوكر وكل الأكشن (منع، تحويل، +2 ملونة): الدور يرجع للاعب اللي لعب (2 لاعب)
+        is_action_or_joker = any(x in card for x in ["🌈", "🔥", "💧", "🌊", "🚫", "🔄"]) or ("+2" in card and len(card) > 2)
+        next_turn = p_idx if is_action_or_joker else (p_idx + 1) % 2
         new_color = chosen_color if chosen_color else card.split()[0]
         alerts = {opp_id: f"🤖 {p_name} لعب {card}"}
 
         if "🌈" in card:
             db_query("UPDATE rooms SET top_card = %s, current_color = %s, turn_index = %s WHERE room_id = %s",
                 (f"{card} {chosen_color}", chosen_color, next_turn, room_id), commit=True)
-            alerts[opp_id] = f"🤖 {p_name} لعب جوكر ألوان واختار {chosen_color}. دورك!"
+            alerts[opp_id] = f"🤖 {p_name} لعب جوكر ألوان واختار {chosen_color}. دور البوت مرة ثانية!"
         elif "🚫" in card or "🔄" in card:
-            next_turn = p_idx
             db_query("UPDATE rooms SET top_card = %s, current_color = %s, turn_index = %s WHERE room_id = %s",
                 (card, new_color, next_turn, room_id), commit=True)
             alerts[opp_id] = f"🤖 {p_name} لعب {card}! دور البوت مرة ثانية."
@@ -1165,7 +1167,7 @@ async def bot_play_turn(room_id, bot):
                     db_query("UPDATE room_players SET hand = %s WHERE user_id = %s", (json.dumps(h_hand), opp_id), commit=True)
             db_query("UPDATE rooms SET top_card = %s, current_color = %s, turn_index = %s, deck = %s WHERE room_id = %s",
                 (card, "ANY", next_turn, json.dumps(deck), room_id), commit=True)
-            alerts[opp_id] = f"🤖 {p_name} لعب 💧 +1 وسحبك ورقة!"
+            alerts[opp_id] = f"🤖 {p_name} لعب 💧 +1 وسحبك ورقة! دور البوت مرة ثانية."
         elif "🌊" in card:
             for _ in range(2):
                 if not deck:
@@ -1177,7 +1179,7 @@ async def bot_play_turn(room_id, bot):
                     db_query("UPDATE room_players SET hand = %s WHERE user_id = %s", (json.dumps(h_hand), opp_id), commit=True)
             db_query("UPDATE rooms SET top_card = %s, current_color = %s, turn_index = %s, deck = %s WHERE room_id = %s",
                 (card, "ANY", next_turn, json.dumps(deck), room_id), commit=True)
-            alerts[opp_id] = f"🤖 {p_name} لعب 🌊 +2 وسحبك ورقتين!"
+            alerts[opp_id] = f"🤖 {p_name} لعب 🌊 +2 وسحبك ورقتين! دور البوت مرة ثانية."
         elif "+2" in card and card.split()[0] in ['🔴', '🟡', '🟢', '🔵']:
             for _ in range(2):
                 if not deck:
@@ -1574,9 +1576,10 @@ async def handle_color(c: types.CallbackQuery, state: FSMContext):
             alerts[opp_id] = f"🎨 {p_name} اختار اللون {chosen_color} وسحبك {penalty} ورقة والدور رجع له!"
             alerts[c.from_user.id] = f"🎨 اخترت اللون {chosen_color} وسحب الخصم {penalty} ورقة!"
         else:
-            next_turn = (p_idx + 1) % 2
-            alerts[opp_id] = f"🎨 {p_name} اختار اللون {chosen_color} والدور صار لك!"
-            alerts[c.from_user.id] = f"🎨 اخترت اللون {chosen_color} والدور انتقل للخصم!"
+            # جوكر ألوان (🌈): الدور يرجع للاعب نفسه (2 لاعب)
+            next_turn = p_idx
+            alerts[opp_id] = f"🎨 {p_name} اختار اللون {chosen_color} — دورك لاحقاً."
+            alerts[c.from_user.id] = f"🎨 اخترت اللون {chosen_color} والدور بقى إلك!"
 
         db_query("UPDATE rooms SET top_card = %s, current_color = %s, turn_index = %s, deck = %s WHERE room_id = %s",
             (f"{card} {chosen_color}", chosen_color, next_turn, json.dumps(deck), room_id), commit=True)
