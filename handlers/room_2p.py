@@ -508,7 +508,7 @@ async def background_auto_draw(room_id, bot, curr_idx):
                     countdown_chat_id = p_id
             except Exception:
                 if not countdown_msg_id:
-                    msg = await bot.send_message(p_id, f"⏳ ماعندك ورقه تشتغل راح اسحبك خلال {sec} ثواني..."")
+                    msg = await bot.send_message(p_id, f"⏳ ماعندك ورقه تشتغل راح اسحبك خلال {sec} ثواني...")
                     countdown_msg_id = msg.message_id
                     countdown_chat_id = p_id
             await asyncio.sleep(1)
