@@ -1733,6 +1733,48 @@ async def random_retry(c: types.CallbackQuery):
         )
 
 
+@router.callback_query(F.data == "start_training_game")
+async def start_training_game(c: types.CallbackQuery):
+    """بدء جولة تدريبية حقيقية مع البوت: البوت يشرح كل ورقة ويترك اللاعب يفوز."""
+    if await _ask_badge_color_if_needed(c):
+        return
+    uid = c.from_user.id
+    user = db_query("SELECT * FROM users WHERE user_id = %s", (uid,))
+    if not user:
+        await c.answer(t(uid, "room_not_found"), show_alert=True)
+        return
+    u_name = user[0]["player_name"]
+    code = generate_room_code()
+    try:
+        db_query("ALTER TABLE rooms ADD COLUMN IF NOT EXISTS is_training BOOLEAN DEFAULT FALSE", commit=True)
+    except Exception:
+        pass
+    db_query(
+        "INSERT INTO rooms (room_id, creator_id, max_players, score_limit, status, is_random) VALUES (%s, %s, 2, 0, 'playing', FALSE)",
+        (code, uid), commit=True
+    )
+    try:
+        db_query("UPDATE rooms SET is_training = TRUE WHERE room_id = %s", (code,), commit=True)
+    except Exception:
+        pass
+    db_query(
+        "INSERT INTO room_players (room_id, user_id, player_name, is_ready) VALUES (%s, %s, %s, TRUE)",
+        (code, uid, u_name), commit=True
+    )
+    BOT_USER_ID = -1
+    db_query(
+        "INSERT INTO room_players (room_id, user_id, player_name, is_ready) VALUES (%s, %s, %s, FALSE)",
+        (code, BOT_USER_ID, "البوت"), commit=True
+    )
+    await c.answer()
+    try:
+        await c.message.edit_text("📚 **وضع التدريب**\n\nجولة حقيقية مع البوت — راح يشرحلك الورقة النازلة وأوراقك ويقولك أي ورقة تقدر تلعب ولماذا.\n\n🎯 الهدف: تفوز أنت!")
+    except Exception:
+        pass
+    from handlers.room_2p import start_new_round
+    await start_new_round(code, c.bot, start_turn_idx=1)
+
+
 @router.callback_query(F.data.startswith("play_vs_bot"))
 async def play_vs_bot(c: types.CallbackQuery):
     if await _ask_badge_color_if_needed(c):
@@ -1774,7 +1816,7 @@ async def play_vs_bot(c: types.CallbackQuery):
     except Exception:
         pass
     from handlers.room_2p import start_new_round
-    # في وضع البوت: الترتيب [البوت, الإنسان] فـ turn_index=1 = دور الإنسان
+    # في وضع البوت: الترتيب [البوت، الإنسان] فـ turn_index=1 = دور الإنسان
     await start_new_round(code, c.bot, start_turn_idx=1)
 
 
@@ -3173,7 +3215,10 @@ async def training_yes_cb(c: types.CallbackQuery, state: FSMContext):
     except Exception:
         pass
     txt = t(uid, "training_title") + "\n\n" + t(uid, "training_content")
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=t(uid, "btn_back_short"), callback_data="training_done")]])
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=t(uid, "btn_start_training_game"), callback_data="start_training_game")],
+        [InlineKeyboardButton(text=t(uid, "btn_back_short"), callback_data="training_done")],
+    ])
     try:
         await c.message.edit_text(txt, reply_markup=kb, parse_mode="Markdown")
     except Exception:
@@ -4424,6 +4469,7 @@ async def show_training_screen(c: types.CallbackQuery):
     uid = c.from_user.id
     txt = t(uid, "training_title") + "\n\n" + t(uid, "training_content")
     kb = [
+        [InlineKeyboardButton(text=t(uid, "btn_start_training_game"), callback_data="start_training_game")],
         [InlineKeyboardButton(text=t(uid, "btn_back_short"), callback_data="rules")],
         [InlineKeyboardButton(text=t(uid, "btn_home"), callback_data="home")],
     ]
