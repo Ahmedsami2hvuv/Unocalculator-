@@ -1018,6 +1018,9 @@ async def player_post_receive_text_from_options(message: types.Message, state: F
             except (TypeError, ValueError):
                 winner_id = None
         w_name = next((pname for pid, pname in (rdata.get("players") or []) if pid == winner_id), "لاعب")
+        # أسماء الخاسرين (كل اللاعبين ما عدا الفائز)
+        losers = [pname for pid, pname in (rdata.get("players") or []) if pid != winner_id]
+        losers_text = " و ".join(_html_esc(n) for n in losers) if losers else "الخصم"
         total_pts = 0
         if winner_id is not None:
             try:
@@ -1029,10 +1032,12 @@ async def player_post_receive_text_from_options(message: types.Message, state: F
         summary = rdata.get("summary", "")
         round_pts_match = re.search(r"\(\+(\d+)\s*نقطة\)", summary) if summary else None
         round_pts = int(round_pts_match.group(1)) if round_pts_match else 0
-        round_line = f"\n📊 <b>حصل على {round_pts} نقطة</b> في هذه الجولة." if round_pts else "\n📊 <b>حصل على نقاط</b> في هذه الجولة."
-        total_line = f"\n⭐ <b>نقاطه الكلية:</b> {total_pts}" if winner_id is not None else ""
+        round_line = f"\n📊 <b>حصل على {round_pts} نقطة</b> في هذه الجولة."
+        total_line = f"\n⭐ <b>نقاطه الكلية:</b> {total_pts}"
         text_to_send = (
-            f"🏆 <b>{_html_esc(w_name)}</b> لقد فاز!{round_line}{total_line}\n\n"
+            f"🏆 <b>{_html_esc(w_name)}</b> فاز على <b>{losers_text}</b>!\n"
+            f"{round_line}\n"
+            f"{total_line}\n\n"
             f"💬 <b>{_html_esc(w_name)}:</b> {_html_esc(text)}"
         )
         join_code = None
