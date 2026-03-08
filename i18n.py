@@ -123,6 +123,7 @@ TEXTS = {
         "invite_pending_room": "🎮 لديك دعوة للانضمام إلى غرفة! سجّل الدخول أو أنشئ حساباً ثم سيتم إدخالك للغرفة تلقائياً.",
         "rules_text": (
         "📜 **قوانين اللعب - أونو العراق 🇮🇶**\n\n"
+        "👉 _للشرح المختصر اضغط زر **التدريب** أدناه._\n\n"
         "**أساسيات اللعبة**\n"
         "• كل لاعب يسحب ٧ أوراق.\n"
         "• الباقي من الورق يسمى «كومة السحب».\n"
@@ -158,6 +159,23 @@ TEXTS = {
         "tutorial_title": "🎓 مرحباً! جولة سريعة على البوت",
         "tutorial_body": "• **لعب عشوائي:** البوت يلاقي لك خصم وتبدأون.\n• **لعب مع الأصدقاء:** تنشئ غرفة أو تنضم بكود أو رابط.\n• **حسابي:** تعديل الاسم والإعدادات.\n• **قوانين اللعب:** قوانين أونو كاملة.\n\nاضغط «جرب الآن» لفتح القائمة والبدء!",
         "tutorial_btn": "✅ جرب الآن",
+        "training_offer_question": "🎓 **أهلاً بك!**\n\nهل تريد **التدريب** على اللعبة أم أنت تعرف أونو مسبقاً؟",
+        "training_btn_yes": "📚 نعم، أريد التدريب",
+        "training_btn_no": "✅ أعرف اللعبة",
+        "training_title": "📚 **التدريب — أونو باختصار**",
+        "training_content": (
+            "🎯 **الهدف:** أن تخلص كل أوراقك قبل الخصم.\n\n"
+            "🃏 **اللعب:** ورقتك يجب أن تطابق إما **نفس اللون** أو **نفس الرقم/الرمز** للورقة النازلة.\n\n"
+            "📌 **أوراق خاصة:**\n"
+            "• **+2** → الخصم يسحب ورقتين.\n"
+            "• **🚫 منع** → الخصم يفوّت دوره.\n"
+            "• **🔄 تدوير** → اتجاه اللعب ينعكس.\n"
+            "• **🌈 جوكر** → تختار اللون الجديد.\n"
+            "• **🔥 +4** → تختار لون والخصم يسحب ٤ (وله حق التحدي).\n\n"
+            "🚨 **أونو!** إذا بقي عندك ورقة واحدة يجب أن تضغط **أونو** قبل ما يلعب غيرك.\n\n"
+            "📜 للتفاصيل الكاملة: **قوانين اللعب** من القائمة."
+        ),
+        "btn_training": "📚 التدريب",
         "invite_reminder": "⏰ تذكير: ما زال عندك دعوة للعب! الرد خلال 15 ثانية المتبقية.",
         "leaderboard_title": "📊 **لوحة المتصدرين**",
         "leaderboard_global": "🌍 الكل",
@@ -181,6 +199,7 @@ TEXTS = {
         "bot_info_title": "ℹ️ **معلومات البوت**",
         "bot_info_text": (
             "🎮 **مرحباً بكم في بوت أونو**\n\n"
+            "📚 **التدريب:** من زر **قوانين اللعب** يمكنك فتح **التدريب** لشرح سريع للعبة.\n\n"
             "هنا كل شيء تقدر تسويه داخل البوت 👇\n\n"
             "🎲 **1) لعب عشوائي**\n"
             "• 🔍 البوت يدور لك خصم وتبدون فوراً.\n"
@@ -423,6 +442,12 @@ TEXTS = {
         "tutorial_title": "🎓 Hi! Quick tour of the bot",
         "tutorial_body": "• **Random play:** The bot finds you an opponent and you start.\n• **Play with friends:** Create a room or join with a code/link.\n• **My account:** Edit name and settings.\n• **Rules:** Full Uno rules.\n\nPress «Try now» to open the menu and start!",
         "tutorial_btn": "✅ Try now",
+        "training_offer_question": "🎓 **Welcome!**\n\nDo you want **training** or do you already know Uno?",
+        "training_btn_yes": "📚 Yes, I want training",
+        "training_btn_no": "✅ I know the game",
+        "training_title": "📚 **Training — Uno in short**",
+        "training_content": "🎯 **Goal:** Get rid of all your cards first.\n\n🃏 **Play:** Your card must match either **color** or **number/symbol** of the top card.\n\n📌 **Special cards:** +2, Skip, Reverse, Wild, Wild +4.\n\n🚨 **Uno!** With one card left, press **Uno** before others play.\n\n📜 Full details: **Rules** from the menu.",
+        "btn_training": "📚 Training",
         "invite_reminder": "⏰ Reminder: You still have a game invite! Reply within the next 15 seconds.",
         "leaderboard_title": "📊 **Leaderboard**",
         "leaderboard_global": "🌍 Everyone",
@@ -667,6 +692,12 @@ TEXTS = {
         "tutorial_title": "🎓 سلام! راهنمای سریع ربات",
         "tutorial_body": "• **بازی تصادفی:** ربات حریف پیدا می‌کند و بازی شروع می‌شود.\n• **بازی با دوستان:** ساخت اتاق یا پیوستن با کد/لینک.\n• **حساب من:** تغییر نام و تنظیمات.\n• **قوانین:** قوانین کامل اونو.\n\n«الان امتحان کن» را بزن تا منو باز شود!",
         "tutorial_btn": "✅ الان امتحان کن",
+        "training_offer_question": "🎓 **خوش اومدی!**\n\nمی‌خوای **تمرین** ببینی یا از قبل اونو بلدی؟",
+        "training_btn_yes": "📚 بله، تمرین می‌خوام",
+        "training_btn_no": "✅ بلدم",
+        "training_title": "📚 **تمرین — اونو خلاصه**",
+        "training_content": "🎯 **هدف:** زودتر از همه کارت‌هات رو تموم کن.\n\n🃏 **بازی:** کارت باید هم‌رنگ یا هم‌عدد با کارت روی میز باشه.\n\n📌 **کارت‌های خاص:** +۲، منع، برعکس، جوكر، جوكر +۴.\n\n🚨 **اوونو!** با یه کارت باید «اوونو» بزنی.\n\n📜 جزئیات: **قوانین** از منو.",
+        "btn_training": "📚 تمرین",
         "invite_reminder": "⏰ یادآوری: هنوز دعوت بازی داری! تا ۱۵ ثانیهٔ بعد پاسخ بده.",
         "leaderboard_title": "📊 **جدول امتیازات**",
         "leaderboard_global": "🌍 همه",
