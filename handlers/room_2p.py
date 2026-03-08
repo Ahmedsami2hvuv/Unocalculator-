@@ -692,6 +692,8 @@ async def send_or_update_game_ui(room_id, bot, user_id, remaining_seconds=None, 
 
         controls = []
         if is_my_turn:
+            if room_id in auto_draw_tasks:
+                controls.append(InlineKeyboardButton(text="➡️ مرر الدور", callback_data=f"pass_{room_id}"))
             if len(hand) == 2 and any(check_validity(c, room['top_card'], room['current_color']) for c in hand):
                 controls.append(InlineKeyboardButton(text="🚨 اونو!", callback_data=f"un_{room_id}"))
 
@@ -1085,6 +1087,11 @@ async def bot_play_turn(room_id, bot):
                 db_query("UPDATE users SET online_points = %s WHERE user_id = %s", (cur + points, opp_id), commit=True)
             except Exception:
                 pass
+            try:
+                from badges import badge_on_loss
+                badge_on_loss(opp_id)
+            except Exception:
+                pass
             win_text = "🏆 **البوت فاز بالجولة!** 🏆\n📊 الخصم (أنت) كان لديه ورق بقيمة " + str(points) + " نقطة."
             db_query("DELETE FROM room_players WHERE room_id = %s", (room_id,), commit=True)
             db_query("DELETE FROM rooms WHERE room_id = %s", (room_id,), commit=True)
@@ -1330,12 +1337,28 @@ async def handle_play(c: types.CallbackQuery, state: FSMContext):
             win_text = f"🏆 **{p_name} فاز بالجولة!** 🏆\n📊 حصل على {points} نقطة."
             from handlers.common import create_replay_session, build_game_end_keyboard
             winner_id = c.from_user.id
-            replay_id = create_replay_session(players, room, '2p', win_text, winner_id=winner_id)
+            opp_id = players[opp_idx]['user_id']
+            is_ranked = bool(room.get('is_random'))
+            try:
+                from badges import badge_on_win, badge_on_loss
+                if opp_id != BOT_USER_ID:
+                    badge_on_loss(opp_id)
+                badge_result = badge_on_win(winner_id, opp_id if opp_id != BOT_USER_ID else None, is_ranked)
+                badge_just_earned = badge_result.get('new_badge_label') if badge_result.get('new_badge') else None
+            except Exception as e:
+                badge_result = {}
+                badge_just_earned = None
+            replay_id = create_replay_session(players, room, '2p', win_text, winner_id=winner_id, badge_just_earned=badge_just_earned)
             for p in players:
                 if p['user_id'] == BOT_USER_ID:
                     continue
                 end_kb = build_game_end_keyboard(replay_id, p['user_id'])
                 await c.bot.send_message(p['user_id'], win_text, reply_markup=end_kb)
+                if p['user_id'] == winner_id and badge_result:
+                    if badge_result.get('reason'):
+                        await c.bot.send_message(p['user_id'], "⚠️ " + badge_result['reason'])
+                    elif badge_result.get('message'):
+                        await c.bot.send_message(p['user_id'], badge_result['message'])
             db_query("DELETE FROM rooms WHERE room_id = %s", (room_id,), commit=True)
             return
 
