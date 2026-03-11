@@ -696,8 +696,6 @@ async def send_or_update_game_ui(room_id, bot, user_id, remaining_seconds=None, 
 
         controls = []
         if is_my_turn:
-            if room_id in auto_draw_tasks and not room.get("is_training"):
-                controls.append(InlineKeyboardButton(text="➡️ مرر الدور", callback_data=f"pass_{room_id}"))
             if len(hand) == 2 and any(check_validity(c, room['top_card'], room['current_color']) for c in hand):
                 controls.append(InlineKeyboardButton(text="🚨 اونو!", callback_data=f"un_{room_id}"))
 
